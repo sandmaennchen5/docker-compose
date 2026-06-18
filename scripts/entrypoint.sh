@@ -34,5 +34,5 @@ if [ -f "$EXT_FILE" ]; then
   done < "$EXT_FILE"
 fi
 
-echo "--- Starting code-server ---"
-exec code-server --bind-addr 0.0.0.0:8443 /workspace
+echo "--- Handing over to LinuxServer init ---"
+exec /init
