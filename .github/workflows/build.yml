@@ -2,7 +2,7 @@ name: Build and Push Code-Server Image
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # alle 6 Stunden prüfen
+    - cron: "0 */6 * * *"   # alle 6 Stunden
   workflow_dispatch:
 
 jobs:
@@ -13,10 +13,20 @@ jobs:
       version: ${{ steps.check.outputs.version }}
 
     steps:
-      - name: Get latest upstream tag
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check latest upstream version (GHCR)
         id: check
         run: |
-          UPSTREAM=$(curl -s https://registry.hub.docker.com/v2/repositories/lscr.io/linuxserver/code-server/tags | jq -r '.results[0].name')
+          echo "🔍 Checking GHCR upstream version..."
+
+          UPSTREAM=$(curl -s "https://ghcr.io/v2/linuxserver/code-server/tags/list" \
+            | jq -r '.tags[]' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V \
+            | tail -n 1)
+
           echo "Latest upstream: $UPSTREAM"
 
           if [ -f upstream_version.txt ]; then
@@ -25,11 +35,15 @@ jobs:
             LAST="none"
           fi
 
+          echo "Last build: $LAST"
+
           if [ "$UPSTREAM" != "$LAST" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
             echo "version=$UPSTREAM" >> $GITHUB_OUTPUT
+            echo "Upstream changed → build required"
           else
             echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No change → skipping build"
           fi
 
   build:
@@ -50,6 +64,7 @@ jobs:
           git config user.email "actions@github.com"
           git add upstream_version.txt
           git commit -m "Update upstream to ${{ needs.check-upstream.outputs.version }}" || true
+          git push || true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -61,12 +76,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push
+      - name: Build and Push Image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          pull: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/codeserver:latest
             ghcr.io/${{ github.repository_owner }}/codeserver:${{ needs.check-upstream.outputs.version }}
-          pull: true
