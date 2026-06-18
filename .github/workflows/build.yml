@@ -1,4 +1,4 @@
-name: Build and Push Code-Server Image
+name: Auto Build Code-Server (LinuxServer Upstream)
 
 on:
   schedule:
@@ -85,3 +85,22 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/codeserver:latest
             ghcr.io/${{ github.repository_owner }}/codeserver:${{ needs.check-upstream.outputs.version }}
+
+      - name: Generate Changelog
+        id: changelog
+        run: |
+          echo "🔧 Generating changelog..."
+          echo "## Changes in version ${{ needs.check-upstream.outputs.version }}" > release.md
+          echo "" >> release.md
+          echo "- Upstream LinuxServer.io updated to version **${{ needs.check-upstream.outputs.version }}**" >> release.md
+          echo "- Auto-built via GitHub Actions" >> release.md
+          echo "- Includes SSH auto-setup, Forgejo integration, extensions installer" >> release.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-upstream.outputs.version }}
+          name: Release ${{ needs.check-upstream.outputs.version }}
+          body_path: release.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
