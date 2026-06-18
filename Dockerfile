@@ -6,7 +6,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 # Dev-/HA-Tools (wenn du willst, hier noch ergänzen)
 RUN npm install -g @devcontainers/cli @unbrained/homeassistant-cli homeassistant-cli typescript lit rollup rollup-plugin-node-resolve rollup-plugin-terser vite eslint prettier home-assistant-js-websocket && \
-    pip install appdaemon homeassistant homeassistant-cli wheel pytest pytest-homeassistant-custom-component ruff black aiohttp voluptuous
+    pip install  --break-system-packages \
+        appdaemon homeassistant homeassistant-cli wheel pytest pytest-homeassistant-custom-component ruff black aiohttp voluptuous
     
 # Extensions-Liste und Entrypoint
 COPY extensions.txt /config/extensions.txt
