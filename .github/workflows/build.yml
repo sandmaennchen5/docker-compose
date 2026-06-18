@@ -21,11 +21,18 @@ jobs:
         run: |
           echo "🔍 Checking GHCR upstream version..."
 
-          # Tags aus GHCR holen
-          TAGS=$(curl -s "https://ghcr.io/v2/linuxserver/code-server/tags/list" \
-            | jq -r '.tags[]')
+          # GHCR API benötigt Authentifizierung
+          TAGS=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://ghcr.io/v2/linuxserver/code-server/tags/list \
+            | jq -r '.tags // empty')
 
-          # Nur echte Versionen extrahieren (Suffixe entfernen)
+          if [ -z "$TAGS" ]; then
+            echo "❌ ERROR: GHCR returned no tags (auth or API issue)"
+            exit 1
+          fi
+
+          # Suffixe wie -ls346 entfernen und echte Versionen extrahieren
           UPSTREAM=$(echo "$TAGS" \
             | sed 's/-ls[0-9]*$//' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
