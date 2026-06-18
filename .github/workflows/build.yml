@@ -16,28 +16,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check latest upstream version (Docker Hub v1)
+      - name: Check latest upstream version (GitHub Releases)
         id: check
         run: |
-          echo "🔍 Checking Docker Hub upstream version (API v1)..."
+          echo "🔍 Checking LinuxServer.io GitHub releases..."
 
-          TAGS=$(curl -s \
-            "https://registry.hub.docker.com/v1/repositories/linuxserver/code-server/tags" \
-            | jq -r '.[].name')
+          UPSTREAM=$(curl -s \
+            "https://api.github.com/repos/linuxserver/docker-code-server/releases" \
+            | jq -r '.[0].tag_name')
 
-          if [ -z "$TAGS" ]; then
-            echo "❌ ERROR: Docker Hub returned no tags"
-            echo "changed=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          echo "Raw upstream tag: $UPSTREAM"
 
-          UPSTREAM=$(echo "$TAGS" \
-            | sed 's/-ls[0-9]*$//' \
-            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | sort -V \
-            | tail -n 1)
+          VERSION=$(echo "$UPSTREAM" | sed 's/-ls[0-9]*$//')
 
-          echo "Latest upstream: $UPSTREAM"
+          echo "Parsed version: $VERSION"
 
           if [ -f upstream_version.txt ]; then
             LAST=$(cat upstream_version.txt)
@@ -47,13 +39,11 @@ jobs:
 
           echo "Last build: $LAST"
 
-          if [ "$UPSTREAM" != "$LAST" ]; then
+          if [ "$VERSION" != "$LAST" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "version=$UPSTREAM" >> $GITHUB_OUTPUT
-            echo "Upstream changed → build required"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "changed=false" >> $GITHUB_OUTPUT
-            echo "No change → skipping build"
           fi
 
   build:
@@ -97,13 +87,11 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/codeserver:${{ needs.check-upstream.outputs.version }}
 
       - name: Generate Changelog
-        id: changelog
         run: |
           echo "## Changes in version ${{ needs.check-upstream.outputs.version }}" > release.md
           echo "" >> release.md
           echo "- Upstream LinuxServer.io updated to version **${{ needs.check-upstream.outputs.version }}**" >> release.md
           echo "- Auto-built via GitHub Actions" >> release.md
-          echo "- Includes SSH auto-setup, Forgejo integration, extensions installer" >> release.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
