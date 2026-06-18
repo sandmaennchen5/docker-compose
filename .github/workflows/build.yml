@@ -2,7 +2,7 @@ name: Auto Build Code-Server (LinuxServer Upstream)
 
 on:
   schedule:
-    - cron: "0 */6 * * *"   # alle 6 Stunden
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -21,8 +21,13 @@ jobs:
         run: |
           echo "🔍 Checking GHCR upstream version..."
 
-          UPSTREAM=$(curl -s "https://ghcr.io/v2/linuxserver/code-server/tags/list" \
-            | jq -r '.tags[]' \
+          # Tags aus GHCR holen
+          TAGS=$(curl -s "https://ghcr.io/v2/linuxserver/code-server/tags/list" \
+            | jq -r '.tags[]')
+
+          # Nur echte Versionen extrahieren (Suffixe entfernen)
+          UPSTREAM=$(echo "$TAGS" \
+            | sed 's/-ls[0-9]*$//' \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
             | sort -V \
             | tail -n 1)
@@ -89,7 +94,6 @@ jobs:
       - name: Generate Changelog
         id: changelog
         run: |
-          echo "🔧 Generating changelog..."
           echo "## Changes in version ${{ needs.check-upstream.outputs.version }}" > release.md
           echo "" >> release.md
           echo "- Upstream LinuxServer.io updated to version **${{ needs.check-upstream.outputs.version }}**" >> release.md
