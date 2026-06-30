@@ -9,7 +9,7 @@ on:
       - main
     paths:
       - "codeserver/**"
-      - ".github/workflows/build.yml"
+      - ".github/workflows/codeserver.yml"
 
 jobs:
   check-upstream:
