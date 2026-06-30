@@ -25,10 +25,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# msmtpq patchen
-COPY patches/msmtpq.patch /tmp/
-RUN patch /usr/libexec/msmtp/msmtpq/msmtpq < /tmp/msmtpq.patch
-
 WORKDIR /opt/mail-gateway
 
 COPY requirements.txt .
@@ -41,7 +37,6 @@ RUN chmod +x docker-entrypoint.sh scripts/healthcheck.sh
 
 # Create msmtpq wrapper in PATH (no --allow-mda-root needed since scheduler runs as 'mail' user)
 COPY scripts/msmtpq /usr/local/bin/msmtpq
-
 RUN chmod +x /usr/local/bin/msmtpq
 
 # Create 'mail' user for non-root execution with proper home directory
