@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# Immer dieselbe Queue verwenden
+export MSMTPQ_Q=/var/spool/msmtp
+
+# Debian-Internettest deaktivieren
+export EMAIL_CONN_TEST=x
+
+exec /usr/libexec/msmtp/msmtpq/msmtpq "$@"
