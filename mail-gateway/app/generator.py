@@ -154,6 +154,7 @@ arguments = ("-f", "%(sender)", "--", "{deliver_to}")
 [options]
 read_all = {read_all}
 delete = {delete}
+allow_mda_root = true
 message_log = /logs/getmail-{name}.log
 message_log_syslog = false
 """

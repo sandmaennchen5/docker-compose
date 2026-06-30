@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import os
 import shutil
 import signal
 import subprocess
@@ -178,7 +179,7 @@ def run_runqueue() -> bool:
     Returns True if the queue was flushed without errors.
     """
     runqueue_bin = _find_bin(
-        "/usr/libexec/msmtp/msmtpqueue/msmtp-runqueue.sh",
+        "/usr/libexec/msmtp/msmtpq/msmtp-queue",
         "/usr/sbin/msmtp-runqueue",
         "/usr/local/sbin/msmtp-runqueue",
         "msmtp-runqueue",
@@ -191,10 +192,11 @@ def run_runqueue() -> bool:
 
     try:
         result = subprocess.run(
-            [runqueue_bin],
+            [runqueue_bin, "-r"],
             capture_output=True,
             text=True,
             timeout=60,
+            env={**os.environ, "MSMTPQ_Q": "/var/spool/msmtp"},
         )
 
         if result.stdout.strip():
