@@ -120,13 +120,13 @@ def write_getmail_conf(account: dict) -> None:
     protocol = account["protocol"].lower()
     retriever = _retriever_type(protocol)
 
-    # IMAP accounts can specify additional mailboxes
+    # IMAP accounts can specify additional mailboxes.
+    # Always use trailing comma so a single entry is also a valid Python tuple.
     mailboxes_line = ""
     if protocol.startswith("imap"):
         mboxes = account.get("mailboxes", ["INBOX"])
-        mailboxes_line = "\nmailboxes = ({})".format(
-            ", ".join(f'"{m}"' for m in mboxes)
-        )
+        items = ", ".join(f'"{m}"' for m in mboxes)
+        mailboxes_line = f"\nmailboxes = ({items},)"
 
     deliver_to = account.get("deliver_to", account["username"])
     delete = str(account.get("delete", False)).lower()
