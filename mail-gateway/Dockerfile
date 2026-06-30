@@ -35,6 +35,10 @@ COPY . .
 
 RUN chmod +x docker-entrypoint.sh scripts/healthcheck.sh
 
+# Create msmtpq wrapper in PATH (msmtpq is not in PATH but in /usr/libexec)
+# This allows getmail6 to find and call msmtpq when running as root
+RUN printf '#!/bin/sh\nexec /usr/libexec/msmtp/msmtpq/msmtpq "$@"\n' > /usr/local/bin/msmtpq && chmod +x /usr/local/bin/msmtpq
+
 # Pre-create all runtime directories so volumes can be mounted without root issues
 RUN mkdir -p \
     /config \
