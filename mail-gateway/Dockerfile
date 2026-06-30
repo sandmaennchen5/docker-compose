@@ -25,6 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# msmtpq patchen
+COPY patches/msmtpq.patch /tmp/
+RUN patch /usr/libexec/msmtp/msmtpq/msmtpq < /tmp/msmtpq.patch
+
 WORKDIR /opt/mail-gateway
 
 COPY requirements.txt .
