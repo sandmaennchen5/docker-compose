@@ -16,9 +16,13 @@ mkdir -p \
 
 touch /runtime/status/status.json
 
+# Pre-create log files so they have correct ownership
+touch /logs/scheduler.log /logs/web.log /logs/scheduler.err /logs/web.err
+
 # Ensure correct ownership and permissions for non-root scheduler execution
 chown -R mail:mail /runtime /logs /var/spool/msmtp 2>/dev/null || true
-chmod -R u+w /runtime /logs /var/spool/msmtp 2>/dev/null || true
+chmod -R u+w,g+w /runtime /logs /var/spool/msmtp 2>/dev/null || true
+chmod 775 /logs 2>/dev/null || true
 
 echo "Checking configuration..."
 

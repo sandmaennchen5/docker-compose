@@ -103,7 +103,7 @@ from {from_addr}
 """
 
     MSMTPRC.write_text(content, encoding="utf-8")
-    MSMTPRC.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)  # 640 permissions
+    MSMTPRC.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)  # 644 permissions (readable by all)
     # Set ownership to mail:mail
     try:
         os.chown(MSMTPRC, 8, 8) if os.name != 'nt' else None
@@ -182,7 +182,7 @@ message_log_syslog = false
 
     conf_path = GETMAIL_DIR / f"{name}.conf"
     conf_path.write_text(conf, encoding="utf-8")
-    conf_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)  # 640 permissions
+    conf_path.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)  # 644 permissions (readable by all)
     # Set ownership to mail:mail
     try:
         os.chown(conf_path, 8, 8) if os.name != 'nt' else None
