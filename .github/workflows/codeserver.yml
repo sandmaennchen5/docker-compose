@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "codeserver/**"
+      - ".github/workflows/build.yml"
 
 jobs:
   check-upstream:
@@ -14,7 +20,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Check latest upstream version (GitHub Releases)
         id: check
@@ -39,8 +45,8 @@ jobs:
             exit 0
           fi
 
-          if [ -f upstream_version.txt ]; then
-            LAST=$(cat upstream_version.txt)
+          if [ -f codeserver/upstream_version.txt ]; then
+            LAST=$(cat codeserver/upstream_version.txt)
           else
             LAST="none"
           fi
@@ -61,27 +67,30 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push Image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./codeserver
+          file: ./codeserver/Dockerfile
           push: true
           pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           tags: |
-            ghcr.io/${{ github.repository_owner }}/codeserver:latest
-            ghcr.io/${{ github.repository_owner }}/codeserver:${{ needs.check-upstream.outputs.version }}
+            ghcr.io/${{ github.repository }}/codeserver:latest
+            ghcr.io/${{ github.repository }}/codeserver:${{ needs.check-upstream.outputs.version }}
 
       - name: Generate Changelog
         run: |
@@ -100,14 +109,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Save upstream version
-        run: echo "${{ needs.check-upstream.outputs.version }}" > upstream_version.txt
+        run: echo "${{ needs.check-upstream.outputs.version }}" > codeserver/upstream_version.txt
 
       - name: Commit upstream version
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-          git add upstream_version.txt
+          git add codeserver/upstream_version.txt
 
           if git diff --cached --quiet; then
             echo "No changes to commit."

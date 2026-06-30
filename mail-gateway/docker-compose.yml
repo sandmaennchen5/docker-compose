@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+
+  mail-gateway:
+
+    container_name: mail-gateway
+
+    image: ghcr.io/sandmaennche5/docker-compose/mail-gateway:latest
+
+    restart: unless-stopped
+
+    hostname: mail-gateway
+
+    ports:
+      - "8080:8080"
+
+    environment:
+
+      TZ: Europe/Berlin
+
+      CONFIG_FILE: /config/config.yaml
+
+      ACCOUNTS_FILE: /config/accounts.yaml
+
+    volumes:
+
+      - ./config:/config
+
+      - ./logs:/logs
+
+      - ./queue:/var/spool/msmtp
+
+    healthcheck:
+
+      test: ["CMD", "/opt/mail-gateway/scripts/healthcheck.sh"]
+
+      interval: 30s
+
+      timeout: 10s
+
+      retries: 3
+
+      start_period: 30s

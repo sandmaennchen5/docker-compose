@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+
+.env
+
+logs/*
+!logs/.gitkeep
+
+queue/*
+!queue/.gitkeep
+
+runtime/*
+!runtime/.gitkeep
+
+*.log
+
+.vscode/
+
+.idea/
+
+.DS_Store
+
+# accounts.yaml enthält Passwörter – NIEMALS committen!
+# Nutze config/accounts.yaml als Vorlage und behalte die lokale Kopie lokal.
+config/accounts.yaml

@@ -1,0 +1,23 @@
+# Mail Gateway – Hauptkonfiguration
+# Kopiere diese Datei nach ./config/config.yaml und passe sie an.
+
+# ── SMTP (Synology MailPlus) ──────────────────────────────────────────────────
+smtp:
+  host: 192.168.1.100       # IP oder Hostname des Synology MailPlus Servers
+  port: 25                  # Standard-SMTP ohne Verschlüsselung (internes Netz)
+  tls: false                # true = STARTTLS / SMTPS aktivieren
+
+  # Optionale SMTP-Authentifizierung (MailPlus intern meist nicht nötig)
+  # username: relay@example.com
+  # password: secret
+
+  # Absender-Adresse (Envelope-From für msmtp)
+  from: postmaster@example.com
+
+# ── Abruf-Intervall ───────────────────────────────────────────────────────────
+# Wie oft werden die Postfächer abgefragt (in Sekunden).
+poll_interval: 120
+
+# ── Web-Interface ─────────────────────────────────────────────────────────────
+web:
+  port: 8080

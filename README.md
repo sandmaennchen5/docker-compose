@@ -1,63 +1,89 @@
-# 🚀 Custom Code-Server Image (Auto-Updating, Persistent Extensions, DevContainer Support)
+# docker-compose
 
-Dieses Repository baut ein **erweitertes Code-Server Image**, das automatisch aktualisiert wird, sobald
-LinuxServer.io ein neues Code-Server Release veröffentlicht.
+Docker Images & Compose Stacks von **sandmaennche5**.  
+Alle Images werden automatisch über GitHub Actions gebaut und auf [GHCR](https://ghcr.io/sandmaennche5/docker-compose) veröffentlicht.
 
-Das Image enthält:
+---
 
-- Docker-Client + Docker-Compose
-- DevContainer CLI
-- Home Assistant Add-on Builder
-- Home Assistant Apps Builder
-- Persistente VS Code Extensions
+## Images
+
+| Image | Beschreibung | Basis |
+|---|---|---|
+| [codeserver](./codeserver/) | Erweitertes Code-Server Image mit Docker, DevContainer CLI und persistenten Extensions | `lscr.io/linuxserver/code-server` |
+| [mail-gateway](./mail-gateway/) | POP3/IMAP Mail-Gateway für Synology MailPlus | `python:3.12-slim-bookworm` |
+
+---
+
+## codeserver
+
+> `ghcr.io/sandmaennchen5/docker-compose/codeserver:latest`
+
+Erweitertes [LinuxServer Code-Server](https://github.com/linuxserver/docker-code-server) Image.  
+Wird automatisch neu gebaut, sobald LinuxServer.io ein neues Release veröffentlicht.
+
+**Enthält:**
+- Docker-Client & Docker Compose
+- DevContainer CLI (`@devcontainers/cli`)
+- Home Assistant Add-on / Apps Builder Tools
+- Persistente VS Code Extensions (via `extensions.txt`)
 - Automatisches Extension-Update bei jedem Start
-- Automatische Tag-Versionierung (`latest` + Upstream-Version)
-- GitHub Actions Auto-Build nur bei Upstream-Änderungen
+- Forgejo SSH-Key-Registrierung (optional via ENV)
+
+**Quick Start:**
+
+```yaml
+services:
+  codeserver:
+    image: ghcr.io/sandmaennchen5/docker-compose/codeserver:latest
+    container_name: codeserver
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./config:/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: Europe/Berlin
+      PASSWORD: changeme
+```
+
+→ Details: [codeserver/README.md](./codeserver/) (sofern vorhanden) oder [`codeserver/Dockerfile`](./codeserver/Dockerfile)
 
 ---
 
-## ✨ Features
+## mail-gateway
 
-### 🔄 Automatische Upstream-Erkennung
-Ein GitHub Action Workflow prüft alle 6 Stunden, ob LinuxServer.io ein neues Code-Server Image veröffentlicht hat.
+> `ghcr.io/sandmaennchen5/docker-compose/mail-gateway:latest`
 
-### 🏷️ Automatische Tag-Versionierung
-Wenn ein Update erkannt wird, baut die Action:
+Holt E-Mails aus POP3- und IMAP-Postfächern mit **getmail6** und leitet sie per **msmtp** an einen **Synology MailPlus** Server weiter.  
+MailPlus übernimmt Spamfilter, Antivirus und lokale Zustellung.
 
-- `ghcr.io/<user>/codeserver:latest`
-- `ghcr.io/<user>/codeserver:<upstream-version>`
+**Features:**
+- Mehrere Konten (POP3/POP3S/IMAP/IMAPS)
+- Konfiguration ausschließlich über `config.yaml` + `accounts.yaml`
+- Robuste Queue via `msmtpq` / `msmtp-runqueue`
+- Bootstrap 5 Web-Dashboard (Port 8080)
+- REST-API (`/api/status`, `/api/fetch`, `/api/reload`, …)
+- Multi-Arch: `linux/amd64`, `linux/arm64`, `linux/arm/v7`
+- Healthcheck via `/health`
 
-### 🧩 Persistente Extensions
-Alle Extensions werden in `/config/extensions.txt` definiert und bei jedem Start aktualisiert.
+**Quick Start:**
 
-### 🛠️ DevContainer & Docker Support
-Das Image enthält:
+```bash
+cd mail-gateway
+cp config/config.yaml ./config/config.yaml      # Pfade anpassen
+cp config/accounts.yaml ./config/accounts.yaml  # Konten eintragen
+docker compose up -d
+# WebUI: http://localhost:8080
+```
 
-- `docker`
-- `docker-compose`
-- `devcontainer` CLI
-
-Damit funktionieren DevContainer, Add-on Builder und Apps Builder direkt im Code-Server.
-
-### 📦 Portainer-kompatibel
-Portainer erkennt automatisch neue Versionen des Images.
-
----
-
-## 📁 Repository Struktur
-
-.
-├── Dockerfile
-├── extensions.txt
-├── scripts/
-│   ├── install-extensions.sh
-│   └── entrypoint.sh
-└── .github/
-└── workflows/
-└── build.yml
-
+→ Details: [`mail-gateway/`](./mail-gateway/)
 
 ---
+
+## Lizenz
+
+[MIT](./LICENSE) – sandmaennche5
 
 ## 🐳 Dockerfile
 
