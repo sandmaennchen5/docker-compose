@@ -116,7 +116,7 @@ def run_getmail(account: dict) -> bool:
     state_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "getmail6",
+        "/usr/bin/getmail6",
         f"--getmaildir={state_dir}",
         f"--rcfile={conf}",
     ]
@@ -160,7 +160,7 @@ def run_runqueue() -> bool:
 
     try:
         result = subprocess.run(
-            ["msmtp-runqueue"],
+            ["/usr/sbin/msmtp-runqueue"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -174,7 +174,7 @@ def run_runqueue() -> bool:
         return result.returncode == 0
 
     except FileNotFoundError:
-        log.error("msmtp-runqueue not found – is msmtp-mta installed?")
+        log.error("/usr/sbin/msmtp-runqueue not found – is msmtp-mta installed?")
         return False
     except subprocess.TimeoutExpired:
         log.error("msmtp-runqueue timed out after 60 s")

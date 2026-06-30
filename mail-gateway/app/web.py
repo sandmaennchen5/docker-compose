@@ -190,7 +190,7 @@ def api_runqueue() -> object:
     """Flush the msmtpq spool directory."""
     try:
         result = subprocess.run(
-            ["msmtp-runqueue"],
+            ["/usr/sbin/msmtp-runqueue"],
             capture_output=True,
             text=True,
             timeout=30,
