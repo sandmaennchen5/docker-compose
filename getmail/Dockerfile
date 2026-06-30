@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 RUN apt-get update && \
-    apt-get install -y msmtp msmtp-mta msmtp-queue ca-certificates cron logrotate \
+    apt-get install -y msmtp msmtp-mta ca-certificates cron logrotate \
                        apache2 php libapache2-mod-php && \
     pip install getmail6 && \
     mkdir -p /var/log/getmail /var/spool/msmtp-queue
