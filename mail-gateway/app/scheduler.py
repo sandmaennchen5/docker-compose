@@ -103,9 +103,15 @@ def _load_accounts() -> list[dict]:
 def _find_bin(*candidates: str) -> str | None:
     """Return the first candidate binary that exists on the system."""
     for name in candidates:
-        path = shutil.which(name)
-        if path:
-            return path
+        # Absolute paths: check directly
+        if name.startswith("/"):
+            if Path(name).exists():
+                return name
+        # Relative names: search in PATH
+        else:
+            path = shutil.which(name)
+            if path:
+                return path
     return None
 
 
@@ -175,24 +181,23 @@ def run_getmail(account: dict) -> bool:
 
 def run_runqueue() -> bool:
     """
-    Flush the msmtpq spool directory by calling msmtp-runqueue.
+    Flush the msmtpq spool directory by calling msmtpq with --q-mgmt flag.
     Returns True if the queue was flushed without errors.
     """
-    runqueue_bin = _find_bin(
-        "/usr/libexec/msmtp/msmtpq/msmtp-queue",
-        "/usr/sbin/msmtp-runqueue",
-        "/usr/local/sbin/msmtp-runqueue",
-        "msmtp-runqueue",
+    msmtpq_bin = _find_bin(
+        "/usr/libexec/msmtp/msmtpq/msmtpq",
+        "/usr/bin/msmtpq",
+        "msmtpq",
     )
-    if not runqueue_bin:
-        log.error("msmtp-runqueue not found – is msmtp-mta installed?")
+    if not msmtpq_bin:
+        log.error("msmtpq not found – is msmtp-mta installed?")
         return False
 
-    log.info("Running %s…", runqueue_bin)
+    log.info("Running %s --q-mgmt -r…", msmtpq_bin)
 
     try:
         result = subprocess.run(
-            [runqueue_bin, "-r"],
+            [msmtpq_bin, "--q-mgmt", "-r"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -207,7 +212,7 @@ def run_runqueue() -> bool:
         return result.returncode == 0
 
     except FileNotFoundError:
-        log.error("/usr/sbin/msmtp-runqueue not found – is msmtp-mta installed?")
+        log.error("msmtpq not found – is msmtp-mta installed?")
         return False
     except subprocess.TimeoutExpired:
         log.error("msmtp-runqueue timed out after 60 s")

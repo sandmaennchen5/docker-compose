@@ -190,14 +190,27 @@ def api_fetch() -> object:
 @app.route("/api/runqueue", methods=["POST"])
 def api_runqueue() -> object:
     """Flush the msmtpq spool directory."""
-    runqueue_bin = shutil.which("/usr/libexec/msmtp/msmtpq/msmtp-queue") \
-        or shutil.which("/usr/sbin/msmtp-runqueue") \
-        or shutil.which("msmtp-runqueue")
-    if not runqueue_bin:
-        return jsonify({"ok": False, "error": "msmtp-queue not found – is msmtp-mta installed?"}), 500
+    # Find msmtpq binary
+    msmtpq_bin = None
+    for candidate in [
+        "/usr/libexec/msmtp/msmtpq/msmtpq",
+        "/usr/bin/msmtpq",
+        "msmtpq"
+    ]:
+        if candidate.startswith("/"):
+            if Path(candidate).exists():
+                msmtpq_bin = candidate
+                break
+        else:
+            found = shutil.which(candidate)
+            if found:
+                msmtpq_bin = found
+                break
+    if not msmtpq_bin:
+        return jsonify({"ok": False, "error": "msmtpq not found – is msmtp-mta installed?"}), 500
     try:
         result = subprocess.run(
-            [runqueue_bin, "-r"],
+            [msmtpq_bin, "--q-mgmt", "-r"],
             capture_output=True,
             text=True,
             timeout=30,
