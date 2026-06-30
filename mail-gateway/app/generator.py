@@ -26,7 +26,7 @@ ACCOUNTS_FILE = Path("/config/accounts.yaml")
 RUNTIME_DIR = Path("/runtime")
 GETMAIL_DIR = RUNTIME_DIR / "getmail"
 MSMTPRC = Path("/etc/msmtprc")
-MSMTPQ_BIN = Path("/usr/lib/msmtp/msmtpq")
+MSMTPQ_BIN = Path("/usr/libexec/msmtp/msmtpq/msmtpq")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 

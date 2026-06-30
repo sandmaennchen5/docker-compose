@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -188,9 +189,14 @@ def api_fetch() -> object:
 @app.route("/api/runqueue", methods=["POST"])
 def api_runqueue() -> object:
     """Flush the msmtpq spool directory."""
+    runqueue_bin = shutil.which("/usr/libexec/msmtp/msmtpqueue/msmtp-runqueue.sh") \
+        or shutil.which("/usr/sbin/msmtp-runqueue") \
+        or shutil.which("msmtp-runqueue")
+    if not runqueue_bin:
+        return jsonify({"ok": False, "error": "msmtp-runqueue not found – is msmtp-mta installed?"}), 500
     try:
         result = subprocess.run(
-            ["/usr/sbin/msmtp-runqueue"],
+            [runqueue_bin],
             capture_output=True,
             text=True,
             timeout=30,

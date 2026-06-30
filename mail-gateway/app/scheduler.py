@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import logging.handlers
+import shutil
 import signal
 import subprocess
 import sys
@@ -98,6 +99,15 @@ def _load_accounts() -> list[dict]:
     return data.get("accounts", [])
 
 
+def _find_bin(*candidates: str) -> str | None:
+    """Return the first candidate binary that exists on the system."""
+    for name in candidates:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
 # ── Core actions ──────────────────────────────────────────────────────────────
 
 def run_getmail(account: dict) -> bool:
@@ -113,10 +123,21 @@ def run_getmail(account: dict) -> bool:
         log.error("getmail config missing for account %r: %s", name, conf)
         return False
 
+    getmail_bin = _find_bin(
+        "/usr/bin/getmail6",
+        "/usr/local/bin/getmail6",
+        "getmail6",
+        "/usr/bin/getmail",
+        "getmail",
+    )
+    if not getmail_bin:
+        log.error("[%s] getmail6/getmail binary not found – is getmail6 installed?", name)
+        return False
+
     state_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "/usr/bin/getmail6",
+        getmail_bin,
         f"--getmaildir={state_dir}",
         f"--rcfile={conf}",
     ]
@@ -156,11 +177,21 @@ def run_runqueue() -> bool:
     Flush the msmtpq spool directory by calling msmtp-runqueue.
     Returns True if the queue was flushed without errors.
     """
-    log.info("Running msmtp-runqueue…")
+    runqueue_bin = _find_bin(
+        "/usr/libexec/msmtp/msmtpqueue/msmtp-runqueue.sh",
+        "/usr/sbin/msmtp-runqueue",
+        "/usr/local/sbin/msmtp-runqueue",
+        "msmtp-runqueue",
+    )
+    if not runqueue_bin:
+        log.error("msmtp-runqueue not found – is msmtp-mta installed?")
+        return False
+
+    log.info("Running %s…", runqueue_bin)
 
     try:
         result = subprocess.run(
-            ["/usr/sbin/msmtp-runqueue"],
+            [runqueue_bin],
             capture_output=True,
             text=True,
             timeout=60,
