@@ -148,7 +148,7 @@ password = {account['password']}{mailboxes_line}
 
 [destination]
 type = MDA_external
-path = msmtpq
+path = /usr/local/bin/msmtpq
 arguments = ("-f", "%(sender)", "--", "{deliver_to}")
 
 [options]
