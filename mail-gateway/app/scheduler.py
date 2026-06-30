@@ -87,7 +87,7 @@ def _queue_size() -> int:
     if not spool.exists():
         return 0
     # msmtpq stores queue files with a .mail suffix
-    return len(list(spool.iterdir()))
+    return len(list(spool.glob("*.mail")))
 
 
 def _load_config() -> dict:
