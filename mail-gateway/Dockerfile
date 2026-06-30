@@ -40,7 +40,9 @@ COPY . .
 RUN chmod +x docker-entrypoint.sh scripts/healthcheck.sh
 
 # Create msmtpq wrapper in PATH (no --allow-mda-root needed since scheduler runs as 'mail' user)
-RUN printf '#!/bin/sh\nexec /usr/libexec/msmtp/msmtpq/msmtpq "$@"\n' > /usr/local/bin/msmtpq && chmod +x /usr/local/bin/msmtpq
+COPY scripts/msmtpq /usr/local/bin/msmtpq
+
+RUN chmod +x /usr/local/bin/msmtpq
 
 # Create 'mail' user for non-root execution with proper home directory
 RUN useradd -r -s /sbin/nologin -d /var/spool/msmtp -m mail 2>/dev/null || usermod -d /var/spool/msmtp mail 2>/dev/null || true
