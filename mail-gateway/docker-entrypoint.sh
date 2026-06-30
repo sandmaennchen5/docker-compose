@@ -16,8 +16,9 @@ mkdir -p \
 
 touch /runtime/status/status.json
 
-# Ensure correct ownership for non-root scheduler execution
+# Ensure correct ownership and permissions for non-root scheduler execution
 chown -R mail:mail /runtime /logs /var/spool/msmtp 2>/dev/null || true
+chmod -R u+w /runtime /logs /var/spool/msmtp 2>/dev/null || true
 
 echo "Checking configuration..."
 
