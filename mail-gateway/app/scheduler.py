@@ -20,6 +20,7 @@ import logging.handlers
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -114,6 +115,13 @@ def _find_bin(*candidates: str) -> str | None:
                 return path
     return None
 
+def smtp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Check whether the configured SMTP server is reachable."""
+    try:
+        with socket.create_connection((host, port), timeout):
+            return True
+    except OSError:
+        return False
 
 # ── Core actions ──────────────────────────────────────────────────────────────
 
@@ -194,6 +202,16 @@ def run_runqueue() -> bool:
         return False
 
     log.info("Running %s --q-mgmt -r…", msmtpq_bin)
+    
+    config = _load_config()
+    
+    host = config.get("smtp_host")
+    port = int(config.get("smtp_port", 25))
+    
+    if host:
+      if not smtp_reachable(host, port):
+        log.warning("SMTP server %s:%d is not reachable.", host, port)
+        return False
 
     try:
         result = subprocess.run(
@@ -201,7 +219,11 @@ def run_runqueue() -> bool:
             capture_output=True,
             text=True,
             timeout=60,
-            env={**os.environ, "MSMTPQ_Q": "/var/spool/msmtp"},
+            env={
+              **os.environ,
+              "MSMTPQ_Q": "/var/spool/msmtp",
+              "EMAIL_CONN_TEST": "x",
+            },
         )
 
         if result.stdout.strip():
