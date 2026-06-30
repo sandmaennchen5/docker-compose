@@ -1,0 +1,3 @@
+*/5 * * * * root getmail -r /etc/getmail/getmailrc >> /var/log/getmail/getmail.log 2>&1
+*/2 * * * * root /usr/bin/msmtp-runqueue >> /var/log/getmail/msmtp-queue.log 2>&1
+0 0 * * * root /usr/sbin/logrotate /etc/logrotate.d/getmail-logrotate

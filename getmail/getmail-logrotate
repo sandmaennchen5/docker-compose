@@ -1,0 +1,8 @@
+/var/log/getmail/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    create 0644 root root
+}
