@@ -1,0 +1,4 @@
+[dvbapi]
+user        = dvbapi
+group       = 1
+au          = reader1
