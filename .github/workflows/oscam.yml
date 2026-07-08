@@ -1,0 +1,74 @@
+name: Build Oscam ICAM EMU
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential libusb-1.0-0-dev \
+          libpcsclite-dev pkg-config git
+
+    - name: Clone Oscam source
+      run: |
+        git clone https://git.streamboard.tv/common/oscam.git
+        cd oscam
+        git checkout master
+
+    - name: Apply ICAM patch
+      run: |
+        cd oscam
+        git apply ../oscam-icam/patches/oscam_emu_icam_dvbapi.patch
+
+    - name: Build Oscam (ICAM + EMU)
+      run: |
+        cd oscam
+        make -j4
+
+    - name: Copy binary
+      run: |
+        cp oscam/oscam oscam-icam/oscam
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: oscam-icam-emu-x86_64
+        path: oscam-icam/oscam
+
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download binary
+      uses: actions/download-artifact@v4
+      with:
+        name: oscam-icam-emu-x86_64
+        path: oscam-icam/
+
+    - name: Build Docker image
+      run: |
+        cd oscam-icam
+        docker build -t ghcr.io/sandmaennchen5/oscam-icam:latest .
+
+    - name: Login GHCR
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Push image
+      run: |
+        docker push ghcr.io/sandmaennchen5/oscam-icam:latest
