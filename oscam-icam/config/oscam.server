@@ -1,0 +1,9 @@
+[reader]
+label       = reader1
+protocol    = cccam
+device      = dein.server.tld,12000
+user        = deinuser
+password    = deinpass
+group       = 1
+caid        = 098D
+inactivitytimeout = 30
