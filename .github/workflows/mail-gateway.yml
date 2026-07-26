@@ -1,6 +1,7 @@
 name: Build & Push Mail Gateway
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
