@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+README.md
+secrets/
+data/
+tmp/
+*.log

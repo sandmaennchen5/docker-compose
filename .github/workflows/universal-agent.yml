@@ -1,0 +1,593 @@
+name: "[Auto] Update & Build Universal Agent"
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Force rebuild even when upstream digests are unchanged"
+        required: false
+        default: false
+        type: boolean
+
+  schedule:
+    - cron: "17 4 * * *"
+
+  push:
+    branches: [main]
+    paths:
+      - "universal-agent/Dockerfile"
+      - "universal-agent/docker-compose.yml"
+      - "universal-agent/.env.example"
+      - "universal-agent/.dockerignore"
+      - "universal-agent/scripts/**"
+      - ".github/workflows/universal-agent.yml"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/universal-agent
+
+  PORTAINER_IMAGE: portainer/agent:sts
+  HAWSER_IMAGE: ghcr.io/finsys/hawser:latest
+  PORTWING_IMAGE: ghcr.io/codeswhat/portwing:latest
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      build_date: ${{ steps.date.outputs.build_date }}
+      repo_tag: ${{ steps.date.outputs.repo_tag }}
+
+      portainer_index_digest: ${{ steps.upstream.outputs.portainer_index_digest }}
+      portainer_amd64_digest: ${{ steps.upstream.outputs.portainer_amd64_digest }}
+      portainer_arm64_digest: ${{ steps.upstream.outputs.portainer_arm64_digest }}
+
+      hawser_index_digest: ${{ steps.upstream.outputs.hawser_index_digest }}
+      hawser_amd64_digest: ${{ steps.upstream.outputs.hawser_amd64_digest }}
+      hawser_arm64_digest: ${{ steps.upstream.outputs.hawser_arm64_digest }}
+
+      portwing_index_digest: ${{ steps.upstream.outputs.portwing_index_digest }}
+      portwing_amd64_digest: ${{ steps.upstream.outputs.portwing_amd64_digest }}
+      portwing_arm64_digest: ${{ steps.upstream.outputs.portwing_arm64_digest }}
+
+      portainer_version: ${{ steps.versions.outputs.portainer_version }}
+      portainer_version_ref: ${{ steps.versions.outputs.portainer_version_ref }}
+      portainer_version_match: ${{ steps.versions.outputs.portainer_version_match }}
+
+      hawser_version: ${{ steps.versions.outputs.hawser_version }}
+      hawser_version_ref: ${{ steps.versions.outputs.hawser_version_ref }}
+      hawser_version_match: ${{ steps.versions.outputs.hawser_version_match }}
+
+      portwing_version: ${{ steps.versions.outputs.portwing_version }}
+      portwing_version_ref: ${{ steps.versions.outputs.portwing_version_ref }}
+      portwing_version_match: ${{ steps.versions.outputs.portwing_version_match }}
+
+      old_portainer_amd64: ${{ steps.current.outputs.portainer_amd64_digest }}
+      old_portainer_arm64: ${{ steps.current.outputs.portainer_arm64_digest }}
+      old_hawser_amd64: ${{ steps.current.outputs.hawser_amd64_digest }}
+      old_hawser_arm64: ${{ steps.current.outputs.hawser_arm64_digest }}
+      old_portwing_amd64: ${{ steps.current.outputs.portwing_amd64_digest }}
+      old_portwing_arm64: ${{ steps.current.outputs.portwing_arm64_digest }}
+
+    steps:
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build date and repository tag
+        id: date
+        shell: bash
+        run: |
+          BUILD_DATE="$(date -u +'%Y.%m.%d')"
+          echo "build_date=${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+          echo "repo_tag=univeral-agent_${BUILD_DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test upstream images
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${PORTAINER_IMAGE}"
+          docker buildx imagetools inspect "${HAWSER_IMAGE}"
+          docker buildx imagetools inspect "${PORTWING_IMAGE}"
+
+      - name: Resolve upstream index and platform digests
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          index_digest() {
+            local image="$1"
+            docker buildx imagetools inspect "$image" \
+              | sed -n 's/^Digest:[[:space:]]*//p' \
+              | head -n1
+          }
+
+          platform_digest() {
+            local image="$1"
+            local platform="$2"
+            docker buildx imagetools inspect "$image" --raw \
+              | jq -r --arg platform "$platform" '
+                  .manifests[]
+                  | select(
+                      (.platform.os + "/" + .platform.architecture) == $platform
+                      and (.platform.variant // "") == ""
+                    )
+                  | .digest
+                ' \
+              | head -n1
+          }
+
+          resolve_one() {
+            local key="$1"
+            local image="$2"
+            local idx amd arm
+
+            idx="$(index_digest "$image")"
+            amd="$(platform_digest "$image" "linux/amd64")"
+            arm="$(platform_digest "$image" "linux/arm64")"
+
+            [[ -n "$idx" && "$idx" != "null" ]] || { echo "::error::Missing index digest for $image"; exit 1; }
+            [[ -n "$amd" && "$amd" != "null" ]] || { echo "::error::Missing linux/amd64 digest for $image"; exit 1; }
+            [[ -n "$arm" && "$arm" != "null" ]] || { echo "::error::Missing linux/arm64 digest for $image"; exit 1; }
+
+            echo "${key}_index_digest=${idx}" >> "$GITHUB_OUTPUT"
+            echo "${key}_amd64_digest=${amd}" >> "$GITHUB_OUTPUT"
+            echo "${key}_arm64_digest=${arm}" >> "$GITHUB_OUTPUT"
+          }
+
+          resolve_one portainer "${PORTAINER_IMAGE}"
+          resolve_one hawser "${HAWSER_IMAGE}"
+          resolve_one portwing "${PORTWING_IMAGE}"
+
+      - name: Resolve SemVer and verify platform digests
+        id: versions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+          PORTAINER_AMD64: ${{ steps.upstream.outputs.portainer_amd64_digest }}
+          PORTAINER_ARM64: ${{ steps.upstream.outputs.portainer_arm64_digest }}
+
+          HAWSER_AMD64: ${{ steps.upstream.outputs.hawser_amd64_digest }}
+          HAWSER_ARM64: ${{ steps.upstream.outputs.hawser_arm64_digest }}
+
+          PORTWING_AMD64: ${{ steps.upstream.outputs.portwing_amd64_digest }}
+          PORTWING_ARM64: ${{ steps.upstream.outputs.portwing_arm64_digest }}
+        run: |
+          set -euo pipefail
+
+          platform_digest() {
+            local image="$1"
+            local platform="$2"
+            docker buildx imagetools inspect "$image" --raw 2>/dev/null \
+              | jq -r --arg platform "$platform" '
+                  .manifests[]
+                  | select(
+                      (.platform.os + "/" + .platform.architecture) == $platform
+                      and (.platform.variant // "") == ""
+                    )
+                  | .digest
+                ' \
+              | head -n1
+          }
+
+          latest_release_tag() {
+            gh api "repos/$1/releases/latest" --jq '.tag_name' 2>/dev/null || true
+          }
+
+          verify_candidate() {
+            local ref="$1"
+            local expected_amd="$2"
+            local expected_arm="$3"
+            local amd arm
+
+            amd="$(platform_digest "$ref" "linux/amd64" || true)"
+            arm="$(platform_digest "$ref" "linux/arm64" || true)"
+
+            [[ -n "$amd" && -n "$arm" && "$amd" == "$expected_amd" && "$arm" == "$expected_arm" ]]
+          }
+
+          resolve_version() {
+            local key="$1"
+            local repo="$2"
+            local image_base="$3"
+            local expected_amd="$4"
+            local expected_arm="$5"
+            local release_tag version candidate
+
+            release_tag="$(latest_release_tag "$repo")"
+
+            if [[ -z "$release_tag" ]]; then
+              echo "${key}_version=unknown" >> "$GITHUB_OUTPUT"
+              echo "${key}_version_ref=" >> "$GITHUB_OUTPUT"
+              echo "${key}_version_match=false" >> "$GITHUB_OUTPUT"
+              return
+            fi
+
+            version="${release_tag#v}"
+
+            for candidate in \
+              "${image_base}:${version}" \
+              "${image_base}:v${version}" \
+              "${image_base}:${version}-alpine" \
+              "${image_base}:v${version}-alpine"
+            do
+              if verify_candidate "$candidate" "$expected_amd" "$expected_arm"; then
+                echo "${key}_version=${version}" >> "$GITHUB_OUTPUT"
+                echo "${key}_version_ref=${candidate}" >> "$GITHUB_OUTPUT"
+                echo "${key}_version_match=true" >> "$GITHUB_OUTPUT"
+                return
+              fi
+            done
+
+            echo "${key}_version=unknown" >> "$GITHUB_OUTPUT"
+            echo "${key}_version_ref=" >> "$GITHUB_OUTPUT"
+            echo "${key}_version_match=false" >> "$GITHUB_OUTPUT"
+          }
+
+          resolve_portainer_version() {
+            local expected_amd="$1"
+            local expected_arm="$2"
+            local version candidate found=false
+
+            # Portainer maintains LTS and STS in parallel, so GitHub's
+            # releases/latest can point to LTS even while agent:sts is newer.
+            # Therefore search release tags and verify by Docker platform digests.
+            while IFS= read -r version; do
+              [[ -n "$version" ]] || continue
+
+              for candidate in \
+                "portainer/agent:${version}" \
+                "portainer/agent:${version}-alpine"
+              do
+                if verify_candidate "$candidate" "$expected_amd" "$expected_arm"; then
+                  echo "portainer_version=${version}" >> "$GITHUB_OUTPUT"
+                  echo "portainer_version_ref=${candidate}" >> "$GITHUB_OUTPUT"
+                  echo "portainer_version_match=true" >> "$GITHUB_OUTPUT"
+                  found=true
+                  break 2
+                fi
+              done
+            done < <(
+              gh api --paginate \
+                "repos/portainer/portainer/releases?per_page=100" \
+                --jq '.[].tag_name' 2>/dev/null \
+              | sed 's/^v//' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -Vr
+            )
+
+            if [[ "$found" != "true" ]]; then
+              echo "portainer_version=unknown" >> "$GITHUB_OUTPUT"
+              echo "portainer_version_ref=" >> "$GITHUB_OUTPUT"
+              echo "portainer_version_match=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          resolve_portainer_version "${PORTAINER_AMD64}" "${PORTAINER_ARM64}"
+          resolve_version hawser "Finsys/hawser" "ghcr.io/finsys/hawser" "${HAWSER_AMD64}" "${HAWSER_ARM64}"
+          resolve_version portwing "CodesWhat/portwing" "ghcr.io/codeswhat/portwing" "${PORTWING_AMD64}" "${PORTWING_ARM64}"
+
+      - name: Read current build platform digests
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="${REGISTRY}/${IMAGE_NAME}:latest"
+
+          if ! docker pull --platform linux/amd64 "$IMG" >/dev/null 2>&1; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            for k in portainer_amd64_digest portainer_arm64_digest hawser_amd64_digest hawser_arm64_digest portwing_amd64_digest portwing_arm64_digest; do
+              echo "${k}=" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
+          label() {
+            docker inspect "$IMG" --format "{{ index .Config.Labels \"$1\" }}" 2>/dev/null || true
+          }
+
+          echo "portainer_amd64_digest=$(label io.sandmaennchen.universal-agent.portainer-amd64-digest)" >> "$GITHUB_OUTPUT"
+          echo "portainer_arm64_digest=$(label io.sandmaennchen.universal-agent.portainer-arm64-digest)" >> "$GITHUB_OUTPUT"
+
+          echo "hawser_amd64_digest=$(label io.sandmaennchen.universal-agent.hawser-amd64-digest)" >> "$GITHUB_OUTPUT"
+          echo "hawser_arm64_digest=$(label io.sandmaennchen.universal-agent.hawser-arm64-digest)" >> "$GITHUB_OUTPUT"
+
+          echo "portwing_amd64_digest=$(label io.sandmaennchen.universal-agent.portwing-amd64-digest)" >> "$GITHUB_OUTPUT"
+          echo "portwing_arm64_digest=$(label io.sandmaennchen.universal-agent.portwing-arm64-digest)" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to build
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
+          CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
+
+          NEW_PORTAINER_AMD64: ${{ steps.upstream.outputs.portainer_amd64_digest }}
+          NEW_PORTAINER_ARM64: ${{ steps.upstream.outputs.portainer_arm64_digest }}
+          NEW_HAWSER_AMD64: ${{ steps.upstream.outputs.hawser_amd64_digest }}
+          NEW_HAWSER_ARM64: ${{ steps.upstream.outputs.hawser_arm64_digest }}
+          NEW_PORTWING_AMD64: ${{ steps.upstream.outputs.portwing_amd64_digest }}
+          NEW_PORTWING_ARM64: ${{ steps.upstream.outputs.portwing_arm64_digest }}
+
+          OLD_PORTAINER_AMD64: ${{ steps.current.outputs.portainer_amd64_digest }}
+          OLD_PORTAINER_ARM64: ${{ steps.current.outputs.portainer_arm64_digest }}
+          OLD_HAWSER_AMD64: ${{ steps.current.outputs.hawser_amd64_digest }}
+          OLD_HAWSER_ARM64: ${{ steps.current.outputs.hawser_arm64_digest }}
+          OLD_PORTWING_AMD64: ${{ steps.current.outputs.portwing_amd64_digest }}
+          OLD_PORTWING_ARM64: ${{ steps.current.outputs.portwing_arm64_digest }}
+        run: |
+          set -euo pipefail
+
+          SHOULD_BUILD=false
+
+          [[ "${EVENT_NAME}" != "schedule" ]] && SHOULD_BUILD=true
+          [[ "${FORCE_REBUILD}" == "true" ]] && SHOULD_BUILD=true
+
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            if [[ "${CURRENT_EXISTS}" != "true" ]] ||
+               [[ "${NEW_PORTAINER_AMD64}" != "${OLD_PORTAINER_AMD64}" ]] ||
+               [[ "${NEW_PORTAINER_ARM64}" != "${OLD_PORTAINER_ARM64}" ]] ||
+               [[ "${NEW_HAWSER_AMD64}" != "${OLD_HAWSER_AMD64}" ]] ||
+               [[ "${NEW_HAWSER_ARM64}" != "${OLD_HAWSER_ARM64}" ]] ||
+               [[ "${NEW_PORTWING_AMD64}" != "${OLD_PORTWING_AMD64}" ]] ||
+               [[ "${NEW_PORTWING_ARM64}" != "${OLD_PORTWING_ARM64}" ]]; then
+              SHOULD_BUILD=true
+            fi
+          fi
+
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+            type=raw,value=${{ needs.check.outputs.build_date }},enable=${{ github.event_name != 'pull_request' }}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: ./universal-agent
+          file: ./universal-agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+          build-args: |
+            PORTAINER_IMAGE=${{ env.PORTAINER_IMAGE }}@${{ needs.check.outputs.portainer_index_digest }}
+            HAWSER_IMAGE=${{ env.HAWSER_IMAGE }}@${{ needs.check.outputs.hawser_index_digest }}
+            PORTWING_IMAGE=${{ env.PORTWING_IMAGE }}@${{ needs.check.outputs.portwing_index_digest }}
+
+            PORTAINER_DIGEST=${{ needs.check.outputs.portainer_index_digest }}
+            HAWSER_DIGEST=${{ needs.check.outputs.hawser_index_digest }}
+            PORTWING_DIGEST=${{ needs.check.outputs.portwing_index_digest }}
+
+            PORTAINER_AMD64_DIGEST=${{ needs.check.outputs.portainer_amd64_digest }}
+            PORTAINER_ARM64_DIGEST=${{ needs.check.outputs.portainer_arm64_digest }}
+
+            HAWSER_AMD64_DIGEST=${{ needs.check.outputs.hawser_amd64_digest }}
+            HAWSER_ARM64_DIGEST=${{ needs.check.outputs.hawser_arm64_digest }}
+
+            PORTWING_AMD64_DIGEST=${{ needs.check.outputs.portwing_amd64_digest }}
+            PORTWING_ARM64_DIGEST=${{ needs.check.outputs.portwing_arm64_digest }}
+
+            PORTAINER_VERSION=${{ needs.check.outputs.portainer_version }}
+            HAWSER_VERSION=${{ needs.check.outputs.hawser_version }}
+            PORTWING_VERSION=${{ needs.check.outputs.portwing_version }}
+
+            BUILD_DATE=${{ needs.check.outputs.build_date }}
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Update versions.yaml
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          BUILD_DATE: ${{ needs.check.outputs.build_date }}
+          REPO_TAG: ${{ needs.check.outputs.repo_tag }}
+
+          PORTAINER_VERSION: ${{ needs.check.outputs.portainer_version }}
+          PORTAINER_VERSION_REF: ${{ needs.check.outputs.portainer_version_ref }}
+          PORTAINER_VERSION_MATCH: ${{ needs.check.outputs.portainer_version_match }}
+          PORTAINER_INDEX: ${{ needs.check.outputs.portainer_index_digest }}
+          PORTAINER_AMD64: ${{ needs.check.outputs.portainer_amd64_digest }}
+          PORTAINER_ARM64: ${{ needs.check.outputs.portainer_arm64_digest }}
+
+          HAWSER_VERSION: ${{ needs.check.outputs.hawser_version }}
+          HAWSER_VERSION_REF: ${{ needs.check.outputs.hawser_version_ref }}
+          HAWSER_VERSION_MATCH: ${{ needs.check.outputs.hawser_version_match }}
+          HAWSER_INDEX: ${{ needs.check.outputs.hawser_index_digest }}
+          HAWSER_AMD64: ${{ needs.check.outputs.hawser_amd64_digest }}
+          HAWSER_ARM64: ${{ needs.check.outputs.hawser_arm64_digest }}
+
+          PORTWING_VERSION: ${{ needs.check.outputs.portwing_version }}
+          PORTWING_VERSION_REF: ${{ needs.check.outputs.portwing_version_ref }}
+          PORTWING_VERSION_MATCH: ${{ needs.check.outputs.portwing_version_match }}
+          PORTWING_INDEX: ${{ needs.check.outputs.portwing_index_digest }}
+          PORTWING_AMD64: ${{ needs.check.outputs.portwing_amd64_digest }}
+          PORTWING_ARM64: ${{ needs.check.outputs.portwing_arm64_digest }}
+        run: |
+          cat > universal-agent/versions.yaml <<EOF
+          build:
+            date: "${BUILD_DATE}"
+            git_tag: "${REPO_TAG}"
+            image: "ghcr.io/${IMAGE_NAME}"
+            image_tag: "${BUILD_DATE}"
+            platforms:
+              - "linux/amd64"
+              - "linux/arm64"
+
+          agents:
+            portainer:
+              source_ref: "${PORTAINER_IMAGE}"
+              version: "${PORTAINER_VERSION}"
+              version_ref: "${PORTAINER_VERSION_REF}"
+              version_matches_digest: ${PORTAINER_VERSION_MATCH}
+              index_digest: "${PORTAINER_INDEX}"
+              platforms:
+                linux/amd64: "${PORTAINER_AMD64}"
+                linux/arm64: "${PORTAINER_ARM64}"
+
+            hawser:
+              source_ref: "${HAWSER_IMAGE}"
+              version: "${HAWSER_VERSION}"
+              version_ref: "${HAWSER_VERSION_REF}"
+              version_matches_digest: ${HAWSER_VERSION_MATCH}
+              index_digest: "${HAWSER_INDEX}"
+              platforms:
+                linux/amd64: "${HAWSER_AMD64}"
+                linux/arm64: "${HAWSER_ARM64}"
+
+            portwing:
+              source_ref: "${PORTWING_IMAGE}"
+              version: "${PORTWING_VERSION}"
+              version_ref: "${PORTWING_VERSION_REF}"
+              version_matches_digest: ${PORTWING_VERSION_MATCH}
+              index_digest: "${PORTWING_INDEX}"
+              platforms:
+                linux/amd64: "${PORTWING_AMD64}"
+                linux/arm64: "${PORTWING_ARM64}"
+          EOF
+
+      - name: Update universal-agent/CHANGELOG.md
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          BUILD_DATE: ${{ needs.check.outputs.build_date }}
+          REPO_TAG: ${{ needs.check.outputs.repo_tag }}
+
+          PORTAINER_VERSION: ${{ needs.check.outputs.portainer_version }}
+          HAWSER_VERSION: ${{ needs.check.outputs.hawser_version }}
+          PORTWING_VERSION: ${{ needs.check.outputs.portwing_version }}
+
+          NEW_PORTAINER_AMD64: ${{ needs.check.outputs.portainer_amd64_digest }}
+          NEW_PORTAINER_ARM64: ${{ needs.check.outputs.portainer_arm64_digest }}
+          NEW_HAWSER_AMD64: ${{ needs.check.outputs.hawser_amd64_digest }}
+          NEW_HAWSER_ARM64: ${{ needs.check.outputs.hawser_arm64_digest }}
+          NEW_PORTWING_AMD64: ${{ needs.check.outputs.portwing_amd64_digest }}
+          NEW_PORTWING_ARM64: ${{ needs.check.outputs.portwing_arm64_digest }}
+
+          OLD_PORTAINER_AMD64: ${{ needs.check.outputs.old_portainer_amd64 }}
+          OLD_PORTAINER_ARM64: ${{ needs.check.outputs.old_portainer_arm64 }}
+          OLD_HAWSER_AMD64: ${{ needs.check.outputs.old_hawser_amd64 }}
+          OLD_HAWSER_ARM64: ${{ needs.check.outputs.old_hawser_arm64 }}
+          OLD_PORTWING_AMD64: ${{ needs.check.outputs.old_portwing_amd64 }}
+          OLD_PORTWING_ARM64: ${{ needs.check.outputs.old_portwing_arm64 }}
+        run: |
+          set -euo pipefail
+
+          status() {
+            local oa="$1" or="$2" na="$3" nr="$4"
+            if [[ -z "$oa" || -z "$or" ]]; then
+              echo "🆕 Neu"
+            elif [[ "$oa" == "$na" && "$or" == "$nr" ]]; then
+              echo "➖ Unverändert"
+            else
+              echo "✅ Geändert"
+            fi
+          }
+
+          TMP="$(mktemp)"
+
+          {
+            echo "# Universal Agent Changelog"
+            echo
+            echo "## ${BUILD_DATE}"
+            echo
+            echo "**Repo-Tag:** \`${REPO_TAG}\`  "
+            echo "**Image:** \`ghcr.io/${IMAGE_NAME}:${BUILD_DATE}\`"
+            echo
+            echo "| Agent | Version | Status | amd64 | arm64 |"
+            echo "|---|---:|---|---|---|"
+            echo "| Portainer Agent | \`${PORTAINER_VERSION}\` | $(status "$OLD_PORTAINER_AMD64" "$OLD_PORTAINER_ARM64" "$NEW_PORTAINER_AMD64" "$NEW_PORTAINER_ARM64") | \`${NEW_PORTAINER_AMD64:0:19}…\` | \`${NEW_PORTAINER_ARM64:0:19}…\` |"
+            echo "| Dockhand / Hawser | \`${HAWSER_VERSION}\` | $(status "$OLD_HAWSER_AMD64" "$OLD_HAWSER_ARM64" "$NEW_HAWSER_AMD64" "$NEW_HAWSER_ARM64") | \`${NEW_HAWSER_AMD64:0:19}…\` | \`${NEW_HAWSER_ARM64:0:19}…\` |"
+            echo "| Drydock / Portwing | \`${PORTWING_VERSION}\` | $(status "$OLD_PORTWING_AMD64" "$OLD_PORTWING_ARM64" "$NEW_PORTWING_AMD64" "$NEW_PORTWING_ARM64") | \`${NEW_PORTWING_AMD64:0:19}…\` | \`${NEW_PORTWING_ARM64:0:19}…\` |"
+            echo
+          } > "$TMP"
+
+          if [[ -f universal-agent/CHANGELOG.md ]]; then
+            tail -n +2 universal-agent/CHANGELOG.md >> "$TMP"
+          fi
+
+          mv "$TMP" universal-agent/CHANGELOG.md
+
+      - name: Commit generated metadata
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add universal-agent/CHANGELOG.md universal-agent/versions.yaml
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(universal-agent): build ${{ needs.check.outputs.build_date }} [skip ci]"
+            git push
+          fi
+
+      - name: Create repository tag
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          REPO_TAG: ${{ needs.check.outputs.repo_tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          if git rev-parse "${REPO_TAG}" >/dev/null 2>&1; then
+            echo "Repository tag ${REPO_TAG} already exists."
+            exit 0
+          fi
+
+          git tag -a "${REPO_TAG}" -m "Universal Agent build ${{ needs.check.outputs.build_date }}"
+          git push origin "${REPO_TAG}"

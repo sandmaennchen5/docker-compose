@@ -1,0 +1,51 @@
+services:
+  universal-agent:
+    image: ghcr.io/sandmaennchen5/docker-compose/universal-agent:latest
+    container_name: universal-agent
+    hostname: ${HOSTNAME:-docker-host}
+    restart: unless-stopped
+    ports:
+      - "${PORTAINER_PORT:-9001}:9001"
+      - "${HAWSER_PORT:-2376}:${HAWSER_PORT:-2376}"
+      - "${PORTWING_PORT:-3000}:${PORTWING_PORT:-3000}"
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      ENABLE_PORTAINER: ${ENABLE_PORTAINER:-true}
+      ENABLE_HAWSER: ${ENABLE_HAWSER:-true}
+      ENABLE_PORTWING: ${ENABLE_PORTWING:-true}
+      PORTAINER_AGENT_SECRET: ${PORTAINER_AGENT_SECRET:-}
+      PORTAINER_AGENT_SECRET_FILE: ${PORTAINER_AGENT_SECRET_FILE:-}
+      HAWSER_PORT: ${HAWSER_PORT:-2376}
+      HAWSER_TOKEN: ${HAWSER_TOKEN:-}
+      HAWSER_TOKEN_FILE: ${HAWSER_TOKEN_FILE:-}
+      HAWSER_STACKS_DIR: /data/hawser/stacks
+      HAWSER_DOCKER_SOCKET: /var/run/docker.sock
+      HAWSER_SERVER_URL: ${HAWSER_SERVER_URL:-}
+      PORTWING_PORT: ${PORTWING_PORT:-3000}
+      PORTWING_TOKEN: ${PORTWING_TOKEN:-}
+      PORTWING_TOKEN_FILE: ${PORTWING_TOKEN_FILE:-}
+      PORTWING_STACKS_DIR: /data/portwing/stacks
+      PORTWING_DOCKER_SOCKET: /var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+      - hawser-stacks:/data/hawser/stacks
+      - portwing-stacks:/data/portwing/stacks
+    secrets:
+      - portainer_agent_secret
+      - hawser_token
+      - portwing_token
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  portainer_agent_secret:
+    file: ./secrets/portainer_agent_secret.txt
+  hawser_token:
+    file: ./secrets/hawser_token.txt
+  portwing_token:
+    file: ./secrets/portwing_token.txt
+
+volumes:
+  hawser-stacks:
+  portwing-stacks:
