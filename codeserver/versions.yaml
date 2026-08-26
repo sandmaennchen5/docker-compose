@@ -1,0 +1,13 @@
+build:
+  date: null
+  git_tag: null
+  image: "ghcr.io/sandmaennchen5/docker-compose/codeserver"
+  image_tag: null
+
+upstream:
+  project: "linuxserver/docker-code-server"
+  image: "lscr.io/linuxserver/code-server"
+  version: null
+  tag: null
+  ref: null
+  digest: null
