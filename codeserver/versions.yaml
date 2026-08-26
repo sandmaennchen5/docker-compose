@@ -1,13 +1,13 @@
 build:
-  date: null
-  git_tag: null
+  date: "2026.08.26"
+  git_tag: "code-server_4.134.0"
   image: "ghcr.io/sandmaennchen5/docker-compose/codeserver"
-  image_tag: null
+  image_tag: "4.134.0"
 
 upstream:
   project: "linuxserver/docker-code-server"
   image: "lscr.io/linuxserver/code-server"
-  version: null
-  tag: null
-  ref: null
-  digest: null
+  version: "4.134.0"
+  tag: "4.134.0-ls360"
+  ref: "lscr.io/linuxserver/code-server:4.134.0-ls360"
+  digest: "sha256:212d588e21815316d6525abe8d14bb0114fc2cf0499f08e9e34a1b514b1055b9"
