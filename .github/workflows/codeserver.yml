@@ -21,7 +21,6 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       upstream_tag: ${{ steps.check.outputs.upstream_tag }}
       repo_tag: ${{ steps.check.outputs.repo_tag }}
-      release_body: ${{ steps.check.outputs.release_body }}
 
     steps:
       - name: Checkout
@@ -33,27 +32,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/linuxserver/docker-code-server/releases/latest")"
+          RELEASE_JSON="$(curl -fsSL 'https://api.github.com/repos/linuxserver/docker-code-server/releases/latest')"
+          UPSTREAM_TAG="$(jq -r '.tag_name' <<< "${RELEASE_JSON}")"
 
-          UPSTREAM_TAG="$(jq -r '.tag_name' <<<"${RELEASE_JSON}")"
-          RELEASE_BODY="$(jq -r '.body // ""' <<<"${RELEASE_JSON}")"
+          if [[ -z "${UPSTREAM_TAG}" || "${UPSTREAM_TAG}" == "null" ]]; then
+            echo "::error::Unable to resolve LinuxServer code-server upstream tag"
+            exit 1
+          fi
 
-          [[ -n "${UPSTREAM_TAG}" && "${UPSTREAM_TAG}" != "null" ]]
-
-          VERSION="$(printf '%s
-' "${UPSTREAM_TAG}" | sed -E 's/-ls[0-9]+$//')"
+          VERSION="${UPSTREAM_TAG%%-ls*}"
           REPO_TAG="code-server_${VERSION}"
+
+          echo "Upstream tag: ${UPSTREAM_TAG}"
+          echo "Version: ${VERSION}"
+          echo "Repository tag: ${REPO_TAG}"
 
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "upstream_tag=${UPSTREAM_TAG}" >> "${GITHUB_OUTPUT}"
           echo "repo_tag=${REPO_TAG}" >> "${GITHUB_OUTPUT}"
-
-          {
-            echo "release_body<<EOF"
-            printf '%s
-' "${RELEASE_BODY}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "changed=true" >> "${GITHUB_OUTPUT}"
@@ -61,8 +57,18 @@ jobs:
           fi
 
           LAST="none"
+
           if [[ -f codeserver/versions.yaml ]]; then
-            LAST="$(awk -F': ' '/^  version:/ {gsub(/"/,"",$2); print $2; exit}' codeserver/versions.yaml || true)"
+            LAST="$(
+              awk -F': ' '
+                /^upstream:/ { in_upstream=1; next }
+                in_upstream && /^  version:/ {
+                  gsub(/"/, "", $2)
+                  print $2
+                  exit
+                }
+              ' codeserver/versions.yaml
+            )"
           elif [[ -f codeserver/upstream_version.txt ]]; then
             LAST="$(cat codeserver/upstream_version.txt)"
           fi
@@ -170,11 +176,17 @@ jobs:
         env:
           VERSION: ${{ needs.check-upstream.outputs.version }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
-          RELEASE_BODY: ${{ needs.check-upstream.outputs.release_body }}
         run: |
           set -euo pipefail
 
           BUILD_DATE="$(date -u +'%Y.%m.%d')"
+
+          RELEASE_BODY="$(
+            curl -fsSL 'https://api.github.com/repos/linuxserver/docker-code-server/releases/latest'             | jq -r --arg tag "${UPSTREAM_TAG}" '
+                if .tag_name == $tag then (.body // "") else "" end
+              '
+          )"
+
           TMP="$(mktemp)"
 
           {
@@ -186,11 +198,13 @@ jobs:
             echo
             echo "### Upstream Changelog"
             echo
+
             if [[ -n "${RELEASE_BODY}" ]]; then
-              printf '%s\n' "${RELEASE_BODY}"
+              echo "${RELEASE_BODY}"
             else
               echo "_Keine Upstream-Release-Notes vorhanden._"
             fi
+
             echo
           } > "${TMP}"
 
