@@ -1,17 +1,17 @@
 build:
-  date: null
-  git_tag: null
+  date: "2026.08.27"
+  git_tag: "mail-gateway_2026.08.27"
   image: "ghcr.io/sandmaennchen5/docker-compose/mail-gateway"
-  image_tag: null
-  image_digest: null
+  image_tag: "2026.08.27"
+  image_digest: "sha256:c37eb0f790509f4212a22b52d7d20774d4995a72005366b30b6f8fc95676bdb2"
   platform: "linux/amd64"
 
 base:
   image: "python:3.12-slim-bookworm"
-  digest: null
-  python: null
+  digest: "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+  python: "3.12.14"
 
 packages:
-  getmail6: null
-  msmtp: null
-  msmtp-mta: null
+  getmail6: "6.18.11-2"
+  msmtp: "1.8.23-1"
+  msmtp-mta: "1.8.23-1"
