@@ -1,4 +1,4 @@
-name: Build & Push Mail Gateway
+name: "[Auto] Update & Build Mail Gateway" 
 
 on:
   workflow_dispatch:
