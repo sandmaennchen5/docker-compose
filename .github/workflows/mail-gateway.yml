@@ -1,0 +1,218 @@
+name: Build & Push Mail Gateway
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 3"
+  push:
+    branches:
+      - main
+    paths:
+      - "mail-gateway/**"
+      - ".github/workflows/mail-gateway.yml"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/mail-gateway
+  BASE_IMAGE: python:3.12-slim-bookworm
+
+jobs:
+  build:
+    name: Build & Push (linux/amd64)
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set build metadata
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DATE="$(TZ=Europe/Berlin date +'%Y.%m.%d')"
+          REPO_TAG="mail-gateway_${BUILD_DATE}"
+          IMAGE_TAG="${BUILD_DATE}"
+
+          echo "build_date=${BUILD_DATE}" >> "${GITHUB_OUTPUT}"
+          echo "repo_tag=${REPO_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Resolve base image digest
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools inspect "${BASE_IMAGE}"
+
+          DIGEST="$(
+            docker buildx imagetools inspect "${BASE_IMAGE}" \
+            | sed -n 's/^Digest:[[:space:]]*//p' \
+            | head -n1
+          )"
+
+          if [[ -z "${DIGEST}" ]]; then
+            echo "::error::Could not resolve digest for ${BASE_IMAGE}"
+            exit 1
+          fi
+
+          echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.vars.outputs.image_tag }}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./mail-gateway
+          file: ./mail-gateway/Dockerfile
+          platforms: linux/amd64
+          push: true
+          pull: true
+          build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}@${{ steps.base.outputs.digest }}
+            BUILD_DATE=${{ steps.vars.outputs.build_date }}
+            BASE_IMAGE_REF=${{ env.BASE_IMAGE }}
+            BASE_IMAGE_DIGEST=${{ steps.base.outputs.digest }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Read installed versions from final image
+        id: installed
+        shell: bash
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+
+          docker pull "${IMAGE_REF}"
+
+          query_pkg() {
+            local package="$1"
+
+            docker run --rm \
+              --entrypoint /bin/sh \
+              "${IMAGE_REF}" \
+              -c "dpkg-query -W -f='\${Version}' '${package}' 2>/dev/null || true"
+          }
+
+          GETMAIL6_VERSION="$(query_pkg getmail6)"
+          MSMTP_VERSION="$(query_pkg msmtp)"
+          MSMTP_MTA_VERSION="$(query_pkg msmtp-mta)"
+          PYTHON_VERSION="$(
+            docker run --rm \
+              --entrypoint python \
+              "${IMAGE_REF}" \
+              --version 2>&1 \
+            | awk '{print $2}'
+          )"
+
+          [[ -n "${GETMAIL6_VERSION}" ]] || GETMAIL6_VERSION="unknown"
+          [[ -n "${MSMTP_VERSION}" ]] || MSMTP_VERSION="unknown"
+          [[ -n "${MSMTP_MTA_VERSION}" ]] || MSMTP_MTA_VERSION="unknown"
+          [[ -n "${PYTHON_VERSION}" ]] || PYTHON_VERSION="unknown"
+
+          echo "getmail6=${GETMAIL6_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "msmtp=${MSMTP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "msmtp_mta=${MSMTP_MTA_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "python=${PYTHON_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Write mail-gateway/versions.yaml
+        shell: bash
+        env:
+          BUILD_DATE: ${{ steps.vars.outputs.build_date }}
+          REPO_TAG: ${{ steps.vars.outputs.repo_tag }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          BASE_IMAGE: ${{ env.BASE_IMAGE }}
+          BASE_DIGEST: ${{ steps.base.outputs.digest }}
+          PYTHON_VERSION: ${{ steps.installed.outputs.python }}
+          GETMAIL6_VERSION: ${{ steps.installed.outputs.getmail6 }}
+          MSMTP_VERSION: ${{ steps.installed.outputs.msmtp }}
+          MSMTP_MTA_VERSION: ${{ steps.installed.outputs.msmtp_mta }}
+        run: |
+          set -euo pipefail
+
+          cat > mail-gateway/versions.yaml <<EOF
+          build:
+            date: "${BUILD_DATE}"
+            git_tag: "${REPO_TAG}"
+            image: "ghcr.io/${IMAGE_NAME}"
+            image_tag: "${IMAGE_TAG}"
+            image_digest: "${IMAGE_DIGEST}"
+            platform: "linux/amd64"
+
+          base:
+            image: "${BASE_IMAGE}"
+            digest: "${BASE_DIGEST}"
+            python: "${PYTHON_VERSION}"
+
+          packages:
+            getmail6: "${GETMAIL6_VERSION}"
+            msmtp: "${MSMTP_VERSION}"
+            msmtp-mta: "${MSMTP_MTA_VERSION}"
+          EOF
+
+      - name: Commit versions.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add mail-gateway/versions.yaml
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(mail-gateway): ${{ steps.vars.outputs.build_date }} [skip ci]"
+            git push
+          fi
+
+      - name: Create repository tag
+        shell: bash
+        env:
+          REPO_TAG: ${{ steps.vars.outputs.repo_tag }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          if git rev-parse "${REPO_TAG}" >/dev/null 2>&1; then
+            echo "Repository tag ${REPO_TAG} already exists."
+            exit 0
+          fi
+
+          git tag -a \
+            "${REPO_TAG}" \
+            -m "Mail Gateway build ${{ steps.vars.outputs.build_date }}"
+
+          git push origin "${REPO_TAG}"

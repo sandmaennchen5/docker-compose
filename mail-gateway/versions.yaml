@@ -1,0 +1,17 @@
+build:
+  date: null
+  git_tag: null
+  image: "ghcr.io/sandmaennchen5/docker-compose/mail-gateway"
+  image_tag: null
+  image_digest: null
+  platform: "linux/amd64"
+
+base:
+  image: "python:3.12-slim-bookworm"
+  digest: null
+  python: null
+
+packages:
+  getmail6: null
+  msmtp: null
+  msmtp-mta: null
