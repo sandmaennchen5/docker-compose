@@ -1,14 +1,14 @@
 build:
-  date: "2026.08.27"
-  git_tag: "mail-gateway_2026.08.27"
+  date: "2026.09.02"
+  git_tag: "mail-gateway_2026.09.02"
   image: "ghcr.io/sandmaennchen5/docker-compose/mail-gateway"
-  image_tag: "2026.08.27"
-  image_digest: "sha256:1443302dea90d69acc0e44fbb4c69b5faf70a1e7ee96a9c4b478eaa4c6b930fb"
+  image_tag: "2026.09.02"
+  image_digest: "sha256:41baeee31da157c093e8aeffbf6a07c7e54038a12744caff213d6d9d81ebd5e3"
   platform: "linux/amd64"
 
 base:
   image: "python:3.12-slim-bookworm"
-  digest: "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+  digest: "sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254"
   python: "3.12.14"
 
 packages:
