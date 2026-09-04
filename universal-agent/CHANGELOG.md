@@ -1,5 +1,17 @@
 # Universal Agent Changelog
 
+## 2026.09.04
+
+**Repo-Tag:** `univeral-agent_2026.09.04`  
+**Image:** `ghcr.io/sandmaennchen5/docker-compose/universal-agent:2026.09.04`
+
+| Agent | Version | Status | amd64 | arm64 |
+|---|---:|---|---|---|
+| Portainer Agent | `2.45.0` | ➖ Unverändert | `sha256:a02b76899fb4…` | `sha256:813e3e42ef13…` |
+| Dockhand / Hawser | `0.2.46` | ➖ Unverändert | `sha256:bd4ded352bbe…` | `sha256:8b1b2316d19f…` |
+| Drydock / Portwing | `0.9.13` | ✅ Geändert | `sha256:ebb04fe6ffc3…` | `sha256:293901bd152b…` |
+
+
 ## 2026.08.28
 
 **Repo-Tag:** `univeral-agent_2026.08.28`  
