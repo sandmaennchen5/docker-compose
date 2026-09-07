@@ -1,8 +1,8 @@
 build:
-  date: "2026.09.04"
-  git_tag: "univeral-agent_2026.09.04"
+  date: "2026.09.07"
+  git_tag: "univeral-agent_2026.09.07"
   image: "ghcr.io/sandmaennchen5/docker-compose/universal-agent"
-  image_tag: "2026.09.04"
+  image_tag: "2026.09.07"
   platforms:
     - "linux/amd64"
     - "linux/arm64"
@@ -30,10 +30,10 @@ agents:
 
   portwing:
     source_ref: "ghcr.io/codeswhat/portwing:latest"
-    version: "0.9.13"
-    version_ref: "ghcr.io/codeswhat/portwing:0.9.13"
+    version: "0.9.14"
+    version_ref: "ghcr.io/codeswhat/portwing:0.9.14"
     version_matches_digest: true
-    index_digest: "sha256:635d7012bda403a5e6b3fd9b5bc670c9b78ba6e37f46322abae8007bd7f2afd4"
+    index_digest: "sha256:222c92f4b996314b67ad34b984d636265f25c3618a9fe67d7a2aff30a52a3d05"
     platforms:
-      linux/amd64: "sha256:ebb04fe6ffc3ed2271e3622c25f3a54839c2498da3702340a61479027a62cd3f"
-      linux/arm64: "sha256:293901bd152b2395961e79e498a9ec21f688bdbd8430a5cef298453eb8cf467b"
+      linux/amd64: "sha256:973eae960693c9792b0b51610a019f17a8f95f4e6131ae7baa960b29776ed916"
+      linux/arm64: "sha256:290b6c1e78ca228a9ba84b8982c726402ca99a371323e9e759ed7550bf1bf3cb"
