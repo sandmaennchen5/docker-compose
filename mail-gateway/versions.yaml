@@ -1,9 +1,9 @@
 build:
-  date: "2026.09.02"
-  git_tag: "mail-gateway_2026.09.02"
+  date: "2026.09.09"
+  git_tag: "mail-gateway_2026.09.09"
   image: "ghcr.io/sandmaennchen5/docker-compose/mail-gateway"
-  image_tag: "2026.09.02"
-  image_digest: "sha256:41baeee31da157c093e8aeffbf6a07c7e54038a12744caff213d6d9d81ebd5e3"
+  image_tag: "2026.09.09"
+  image_digest: "sha256:52bef54da7fcf0f14d0f98b6676db32053958ddbcbeeb0942e159efc0bdb7ef6"
   platform: "linux/amd64"
 
 base:
