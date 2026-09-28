@@ -1,8 +1,8 @@
 build:
-  date: "2026.09.22"
-  git_tag: "univeral-agent_2026.09.22"
+  date: "2026.09.28"
+  git_tag: "univeral-agent_2026.09.28"
   image: "ghcr.io/sandmaennchen5/docker-compose/universal-agent"
-  image_tag: "2026.09.22"
+  image_tag: "2026.09.28"
   platforms:
     - "linux/amd64"
     - "linux/arm64"
