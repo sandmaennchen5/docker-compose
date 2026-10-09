@@ -1,5 +1,24 @@
 # Code-Server Changelog
 
+## 4.141.0 — 2026.10.09
+
+**Upstream:** `linuxserver/docker-code-server:4.141.0-ls369`
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.141.0-ls369/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.140.0-ls368...4.141.0-ls369
+
+**Remote Changes:**
+
+Updating to 4.141.0
+
+
 ## 4.140.0 — 2026.10.02
 
 **Upstream:** `linuxserver/docker-code-server:4.140.0-ls368`
