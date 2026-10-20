@@ -14,6 +14,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/git-advanced-multisync-image.yml
+      - git-advanced-multisync/Dockerfile
 
 permissions:
   contents: read
@@ -30,11 +31,17 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Check out image recipe
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Check out upstream source
         uses: actions/checkout@v4
         with:
           repository: DEC-LLC/git-advanced-multisync
           ref: ${{ inputs.upstream_ref || 'main' }}
+          path: upstream
           persist-credentials: false
 
       - name: Determine image name and source revision
@@ -44,7 +51,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           echo "name=ghcr.io/${OWNER,,}/git-advanced-multisync" >> "$GITHUB_OUTPUT"
-          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -84,8 +91,8 @@ jobs:
         if: steps.updates.outputs.rebuild == 'true'
         uses: docker/build-push-action@v7
         with:
-          context: .
-          file: ./Containerfile
+          context: ./upstream
+          file: ./git-advanced-multisync/Dockerfile
           platforms: linux/amd64
           push: true
           pull: true

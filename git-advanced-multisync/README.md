@@ -2,7 +2,14 @@
 
 Der Workflow `.github/workflows/git-advanced-multisync-image.yml` baut den
 Quellcode von https://github.com/DEC-LLC/git-advanced-multisync mit dessen
-`Containerfile` und veröffentlicht das Image in der GitHub Container Registry.
+eigenen Dockerfile auf Debian-Basis und veröffentlicht das Image in der GitHub
+Container Registry. Das Upstream-Containerfile benötigt eine nicht öffentlich
+erreichbare Hersteller-Registry und systemd; dieses Image startet stattdessen
+die Webanwendung direkt, die ihre Worker selbst startet. Tini übernimmt die
+Signalweiterleitung und das Aufräumen verwaister Prozesse. Die Anwendung läuft
+als Benutzer mit UID 10001; eingebundene Arbeitsverzeichnisse müssen für diesen
+Benutzer beschreibbar sein. Beim Image-Build werden beide Perl-Einstiegspunkte
+auf Syntaxfehler und fehlende Module geprüft.
 
 ## Erster Build
 
