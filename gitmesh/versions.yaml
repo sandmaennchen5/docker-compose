@@ -1,11 +1,43 @@
-# Wird nach einem erfolgreichen GitHub-Image-Build automatisch ersetzt.
-# Noch keine veroeffentlichten Image-Versionen durch diesen Workflow ermittelt.
-build:
-  status: "pending_first_github_build"
-  image: "ghcr.io/sandmaennchen5/gitmesh"
-  platforms:
-    - "linux/amd64"
-    - "linux/arm64"
-base:
-  image: "python:3.13-slim"
-platforms: {}
+"build":
+  "date": "2026.10.21"
+  "git_tag": ""
+  "git_revision": "a0558ef5d56ab37d01b4deeef66dcee6482b00f7"
+  "image": "ghcr.io/sandmaennchen5/gitmesh"
+  "image_tag": "sha-a0558ef5d56ab37d01b4deeef66dcee6482b00f7"
+  "image_digest": "sha256:01178e780778996a8a1a5b86ffb236ffb202c72a54d97e47e1b6778fc7d3b130"
+  "platforms": ["linux/amd64", "linux/arm64"]
+"base":
+  "image": "python:3.13-slim"
+"platforms":
+  "linux/amd64":
+    "python": "3.13.16"
+    "git": "2.47.3"
+    "openssh": "OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026"
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026"
+    "sqlite": "3.46.1"
+    "os": "Debian GNU/Linux 13 (trixie)"
+    "packages":
+      "git": "1:2.47.3-0+deb13u1"
+      "openssh-client": "1:10.0p1-7+deb13u4"
+      "ca-certificates": "20250419+deb13u1"
+    "python_packages":
+      "cryptography": "50.0.2"
+      "cffi": "2.1.1"
+      "pycparser": "3.11"
+    "image_digest": "sha256:757951e9a27caedd4b498205728dd1b84a1e60830f704f990bddceadd9a73be5"
+  "linux/arm64":
+    "python": "3.13.16"
+    "git": "2.47.3"
+    "openssh": "OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026"
+    "openssl": "OpenSSL 3.5.7 9 Jun 2026"
+    "sqlite": "3.46.1"
+    "os": "Debian GNU/Linux 13 (trixie)"
+    "packages":
+      "git": "1:2.47.3-0+deb13u1"
+      "openssh-client": "1:10.0p1-7+deb13u4"
+      "ca-certificates": "20250419+deb13u1"
+    "python_packages":
+      "cryptography": "50.0.2"
+      "cffi": "2.1.1"
+      "pycparser": "3.11"
+    "image_digest": "sha256:86fcee1f3c86220423e710ac0565bfe2faafa41f5badeffe7cb7592f61a8b131"
