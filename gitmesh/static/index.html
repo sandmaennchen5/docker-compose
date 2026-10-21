@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GitMesh</title><link rel="stylesheet" href="/style.css"></head>
+<body><header><strong>⬡ GitMesh</strong><span>Deine Repositories. Ein Netz.</span></header><main>
+<h1>GitHub ↔ GitLab ↔ Forgejo</h1><p>Bidirektional synchronisieren. Konflikte sichtbar machen. Historie erhalten.</p>
+<form id="login"><label>Admin-Token <input id="token" type="password" autocomplete="off" required></label><button>Verbinden</button></form>
+<p id="message" role="status">Token eingeben, um das Dashboard zu laden.</p>
+<div id="controls" hidden><button id="sync" type="button">Jetzt synchronisieren</button> <button id="logout" type="button">Abmelden</button></div>
+<section id="settings" hidden><h2>Einstellungen</h2><p>Änderungen gelten nach dem Speichern. Entfernen eines Netzes löscht keine Remote-Repositories.</p>
+<form id="settings-form"><label>Sync-Intervall (Sekunden) <input id="interval" type="number" min="30" max="86400" value="300" required></label>
+<div id="editors"></div><button id="add-repo" type="button">Netz hinzufügen</button> <button type="submit">Einstellungen speichern</button> <button id="reload" type="button">Gespeicherten Stand laden</button>
+</form></section>
+<h2>Repository-Netze</h2><section id="repos"></section><h2>Sync-Historie</h2><section id="history"></section>
+<footer>Fast-forward only · Keine automatischen Löschungen · Keine Force-Pushes</footer></main><script src="/app.js"></script></body></html>

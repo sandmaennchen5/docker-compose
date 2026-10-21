@@ -1,0 +1,5 @@
+.env
+gitmesh.json
+ssh
+tests
+__pycache__

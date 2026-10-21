@@ -1,0 +1,15 @@
+{
+  "repositories": [
+    {
+      "name": "mein-projekt",
+      "enabled": true,
+      "webhook_secret_env": "GITMESH_WEBHOOK_SECRET",
+      "remotes": {
+        "github": "ssh://git@github.com/USER/REPO.git",
+        "gitlab": "ssh://git@gitlab.com/USER/REPO.git",
+        "forgejo": "ssh://git@forgejo.example.org/USER/REPO.git"
+      }
+    }
+  ],
+  "interval": 300
+}

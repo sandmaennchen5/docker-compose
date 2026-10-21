@@ -1,0 +1,110 @@
+"""Integration tests use temporary local repositories, never configured servers."""
+import importlib.util
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location('gitmesh', Path(__file__).parents[1] / 'gitmesh.py')
+mesh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mesh)
+GIT = os.environ.get('GITMESH_TEST_GIT', shutil.which('git'))
+
+
+@unittest.skipUnless(GIT, 'Git executable required')
+class SyncTests(unittest.TestCase):
+    def command(self, path, *args, check=True):
+        result = subprocess.run([GIT, '-c', 'protocol.file.allow=always', '-C', str(path), *args],
+                                text=True, capture_output=True, timeout=30)
+        if check and result.returncode:
+            self.fail(result.stderr)
+        return result
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.work = self.root / 'work'
+        self.work.mkdir()
+        self.command(self.work, 'init', '-b', 'main')
+        self.command(self.work, 'config', 'user.name', 'GitMesh Test')
+        self.command(self.work, 'config', 'user.email', 'test@example.invalid')
+        self.commit('initial')
+        self.remotes = {}
+        for name in ('github', 'gitlab', 'forgejo'):
+            remote = self.root / name
+            remote.mkdir()
+            self.command(remote, 'init', '--bare')
+            self.remotes[name] = str(remote)
+        self.repo = {'name': 'test', 'remotes': self.remotes}
+        self.addCleanup(patch.stopall)
+        patch.object(mesh, 'DATA', self.root / 'data').start()
+        # Production forbids file transport; tests substitute the Git runner only.
+        patch.object(mesh, 'git', self.command).start()
+        self.command(self.work, 'push', self.remotes['github'], 'main')
+
+    def commit(self, text):
+        (self.work / 'content.txt').write_text(text)
+        self.command(self.work, 'add', '.')
+        self.command(self.work, 'commit', '-m', text)
+        return self.command(self.work, 'rev-parse', 'HEAD').stdout.strip()
+
+    def tip(self, remote, ref='refs/heads/main'):
+        return self.command(Path(self.remotes[remote]), 'rev-parse', ref).stdout.strip()
+
+    def test_three_way_sync_and_repeat_are_idempotent(self):
+        status, details = mesh.synchronize(self.repo)
+        self.assertEqual(status, 'success')
+        self.assertEqual(len(details['updated']), 2)
+        self.assertEqual(len({self.tip(r) for r in self.remotes}), 1)
+        self.assertEqual(mesh.synchronize(self.repo)[1]['updated'], [])
+
+    def test_updates_from_each_provider_propagate(self):
+        mesh.synchronize(self.repo)
+        for name in self.remotes:
+            tip = self.commit('change from ' + name)
+            self.command(self.work, 'push', self.remotes[name], 'main')
+            self.assertEqual(mesh.synchronize(self.repo)[0], 'success')
+            self.assertTrue(all(self.tip(r) == tip for r in self.remotes))
+
+    def test_divergence_preserves_all_tips(self):
+        mesh.synchronize(self.repo)
+        base = self.tip('github')
+        self.commit('left')
+        self.command(self.work, 'push', self.remotes['github'], 'main')
+        self.command(self.work, 'reset', '--hard', base)
+        self.commit('right')
+        self.command(self.work, 'push', self.remotes['forgejo'], 'main')
+        before = {r: self.tip(r) for r in self.remotes}
+        status, details = mesh.synchronize(self.repo)
+        self.assertEqual(status, 'conflict')
+        self.assertIn('heads/main', details['conflicts'])
+        self.assertEqual(before, {r: self.tip(r) for r in self.remotes})
+
+    def test_tag_conflict_is_not_overwritten(self):
+        mesh.synchronize(self.repo)
+        self.command(self.work, 'tag', '-a', 'v1', '-m', 'first tag')
+        self.command(self.work, 'push', self.remotes['github'], 'refs/tags/v1')
+        mesh.synchronize(self.repo)
+        self.command(self.work, 'tag', '-f', '-a', 'v1', '-m', 'different tag')
+        self.command(self.work, 'push', '--force', self.remotes['forgejo'], 'refs/tags/v1')
+        before = {r: self.tip(r, 'refs/tags/v1') for r in self.remotes}
+        self.assertEqual(mesh.synchronize(self.repo)[0], 'conflict')
+        self.assertEqual(before, {r: self.tip(r, 'refs/tags/v1') for r in self.remotes})
+
+    def test_failed_fetch_prevents_all_pushes(self):
+        mesh.synchronize(self.repo)
+        before = self.tip('gitlab')
+        self.commit('new change')
+        self.command(self.work, 'push', self.remotes['github'], 'main')
+        self.repo['remotes']['forgejo'] = str(self.root / 'missing')
+        with self.assertRaises(AssertionError):
+            mesh.synchronize(self.repo)
+        self.assertEqual(self.tip('gitlab'), before)
+
+
+if __name__ == '__main__':
+    unittest.main()
