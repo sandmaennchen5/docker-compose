@@ -1,0 +1,104 @@
+name: Build MultiGit image
+
+on:
+  push:
+    branches: [main]
+    tags: ['multigit-v*']
+    paths:
+      - 'multigit/**'
+      - '.github/workflows/multigit-image.yml'
+  pull_request:
+    paths:
+      - 'multigit/**'
+      - '.github/workflows/multigit-image.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: multigit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Test MultiGit
+        run: python -m unittest discover -s multigit -p test_web.py -v
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Determine image name and tags
+        id: image
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REVISION: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER,,}/multigit"
+          echo "name=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo 'tags<<MULTIGIT_TAGS'
+            echo "$image:sha-$REVISION"
+            if [[ "$REF_TYPE" == "branch" && "$REF_NAME" == "$DEFAULT_BRANCH" ]]; then
+              echo "$image:latest"
+            fi
+            if [[ "$REF_TYPE" == "tag" ]]; then
+              echo "$image:${REF_NAME#multigit-}"
+            fi
+            echo 'MULTIGIT_TAGS'
+          } >> "$GITHUB_OUTPUT"
+      - name: Resolve upstream revision
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(git ls-remote https://github.com/TIVerse/multigit.git refs/heads/master | cut -f1)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish
+        uses: docker/build-push-action@v7
+        with:
+          context: ./multigit
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            MULTIGIT_REF=${{ steps.upstream.outputs.revision }}
+          push: ${{ github.event_name != 'pull_request' }}
+          pull: true
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=MultiGit
+          cache-from: type=gha,scope=multigit
+          cache-to: type=gha,mode=max,scope=multigit

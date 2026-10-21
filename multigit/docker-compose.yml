@@ -1,0 +1,23 @@
+services:
+  multigit:
+    image: ${MULTIGIT_IMAGE:-ghcr.io/sandmaennchen5/multigit:latest}
+    build:
+      context: .
+      args:
+        MULTIGIT_REF: ${MULTIGIT_REF:-master}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8088}:8080"
+    environment:
+      WEB_USER: ${WEB_USER:-admin}
+      WEB_PASSWORD: ${WEB_PASSWORD:?Bitte WEB_PASSWORD in .env setzen}
+    volumes:
+      - ./repos:/repos
+      - multigit-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  multigit-data:

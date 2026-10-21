@@ -17,3 +17,7 @@ Alle Images werden automatisch über GitHub Actions gebaut und auf [GHCR](https:
 ## GitMesh
 
 [GitMesh](./gitmesh/) ist der eigene Git-Sync-Dienst mit Web-Dashboard für GitHub, GitLab und Forgejo. Lokaler Docker-Build, bidirektionale Fast-forward-Synchronisierung, Webhooks und Konfliktanzeige. Einrichtung und Umfang stehen in der GitMesh-README.
+
+## MultiGit
+
+[MultiGit](./multigit/) wird lokal aus dem Rust-Quellcode gebaut und erhält ein eigenes Webinterface für Repository-Status, Sync-Vorschau, Push, Pull und Synchronisierung. Einrichtung und Start stehen in der MultiGit-README.

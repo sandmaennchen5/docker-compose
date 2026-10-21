@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MultiGit · Webinterface</title>
+<style>
+body{font:16px system-ui;background:#101722;color:#e3eaf4;max-width:1000px;margin:50px auto;padding:0 24px}h1{margin-bottom:4px}p{color:#a9bbd1}section{background:#192536;border:1px solid #304057;border-radius:12px;padding:24px;margin:24px 0}button,select{font:inherit;background:#283d58;color:white;border:1px solid #496080;border-radius:7px;padding:10px 14px;margin:5px}button{cursor:pointer}button:hover{background:#38577c}button:disabled{opacity:.4;cursor:wait}pre{white-space:pre-wrap;overflow-wrap:anywhere;min-height:220px;background:#0b111b;padding:20px;border-radius:8px}label{display:block}#state{color:#8ed5c0}
+</style>
+<h1>MultiGit</h1><p>Ein Repository. Mehrere Ziele. Dein Sync im Blick.</p>
+<section><label for="repo">Repository</label><select id="repo"></select><button id="refresh">Aktualisieren</button>
+<p>Git-Repositories als direkte Unterordner in <code>/repos</code> einbinden.</p>
+<div id="actions"></div></section>
+<section><strong id="state" role="status">Bereit</strong><pre id="output" aria-live="polite">Repository auswählen und Status abrufen.</pre></section>
+<script>
+const repo=document.querySelector('#repo'),out=document.querySelector('#output'),state=document.querySelector('#state');
+async function refresh(){try{const r=await fetch('/api/repos');if(!r.ok)throw Error('Repositories konnten nicht geladen werden');const names=await r.json();repo.replaceChildren(...names.map(n=>new Option(n,n)));if(!names.length)out.textContent='Keine Repositories gefunden. Ein vorhandenes Git-Repository nach ./repos einbinden.';}catch(e){state.textContent=e.message;}}
+document.querySelector('#refresh').onclick=refresh;
+for(const [action,label] of Object.entries({status:'Status',remotes:'Remotes',init:'Initialisieren',preview:'Sync-Vorschau',sync:'Synchronisieren',push:'Push',pull:'Pull',doctor:'Diagnose'})){
+ const button=document.createElement('button');button.textContent=label;document.querySelector('#actions').append(button);
+ button.onclick=async()=>{if(!repo.value)return;if(['sync','push','pull','init'].includes(action)&&!confirm(label+' für '+repo.value+' ausführen?'))return;
+ document.querySelectorAll('button').forEach(b=>b.disabled=true);state.textContent=label+' läuft …';out.textContent='';
+ try{const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json','X-MultiGit':'1'},body:JSON.stringify({repo:repo.value,action})});const data=await r.json();out.textContent=data.output||data.error||'(Keine Ausgabe)';state.textContent=r.ok?'Beendet · Exit-Code '+data.code:'Fehler';}catch(e){state.textContent='Verbindungsfehler';out.textContent=e.message;}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}};
+}
+refresh();
+</script></html>
