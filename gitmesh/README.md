@@ -154,7 +154,7 @@ Unter **Profile & Gruppen** benannte Worker-Gruppen anlegen, Parallelitaet und C
 
 ## Mehrere Repository-Zuordnungen je Profil
 
-Unter **Profile & Gruppen** ein gemeinsames Profil anlegen. Es legt Richtung, Quelle, Konfliktregel, Branch-Filter, Tags, Intervall und Worker-Gruppe fest. Unter **Sync-Profile** jeder Repository-Zuordnung dieses gemeinsame Profil zuweisen. Die gemeinsamen Regeln sind verbindlich; die entsprechenden Felder werden im Zuordnungseditor gesperrt. Remote-URLs, Provider-Zuordnungen und Zuordnungsname bleiben individuell. Bei Einweg-Profilen muss derselbe Quell-Remote-Name in jeder Zuordnung vorkommen. Der Profil-Schalter reiht alle aktiven zugehoerigen Zuordnungen ein. Einzelne Zuordnungen behalten eigene Jobs, Cache und Protokolle. Vor dem Loeschen eines gemeinsamen Profils oder einer Gruppe die Zuordnungen loesen.
+Unter **Profile & Gruppen** ein gemeinsames Profil anlegen. Es legt Richtung, Quelle, Konfliktregel, Branch-Filter, Tags, Intervall und Worker-Gruppe fest. Unter **Sync-Profile** jeder Repository-Zuordnung dieses gemeinsame Profil zuweisen. Gemeinsame Ablaufregeln sind verbindlich; deren Felder werden im Zuordnungseditor gesperrt. Die Komponenten unter **Was synchronisieren?** bleiben pro Zuordnung editierbar: Abweichende Werte werden in `sync_overrides` gespeichert und haben fuer diese Zuordnung Vorrang, auch explizites `false` fuer Wiki. Ohne lokale Abweichung wird die gemeinsame Vorgabe weiter geerbt. Remote-URLs, Provider-Zuordnungen und Zuordnungsname bleiben individuell. Bei Einweg-Profilen muss derselbe Quell-Remote-Name in jeder Zuordnung vorkommen. Der Profil-Schalter reiht alle aktiven zugehoerigen Zuordnungen ein. Einzelne Zuordnungen behalten eigene Jobs, Cache und Protokolle. Vor dem Loeschen eines gemeinsamen Profils oder einer Gruppe die Zuordnungen loesen.
 
 Bestehende Konfigurationen ohne `profiles` und `worker_sets` bleiben gueltig und verwenden eigene Regeln sowie die Gruppe `default`. Gemeinsame Profile werden als Objekt unter `profiles`, Worker-Gruppen unter `worker_sets` gespeichert; eine Zuordnung verweist mit `profile` und/oder `worker_set` darauf. Gruppen-Einstellungen erben nicht angegebene Ressourcenlimits aus `worker`.
 
@@ -190,7 +190,7 @@ Im Repository-Netz fuer `target` die direkte Git-URL `http://172.30.10.20:40501/
 
 ## Default-Branch bei der ersten Synchronisierung
 
-GitMesh aendert keine Default-Branch-Einstellung per Provider-API. Bei einem Ziel ohne Branches wird der ueber Git-HEAD ermittelte Default-Branch der Quelle zuerst gepusht, sofern der Branch-Filter ihn einschliesst. Dadurch wird die automatische Auswahl des ersten Branches auf dem Ziel nicht mehr durch die alphabetische Reihenfolge (z. B. beta vor main) bestimmt. Im bidirektionalen Modus dient der eingestellte Start-Remote, sonst der erste befuellte Remote als Bezug. Bereits befuellte Ziele behalten ihren bestehenden Standardbranch. Ein frueher automatisch ausgewaehlter Standardbranch muss einmal in den Repository-Einstellungen des Zielservers korrigiert werden. Unterschiedliche Branch-Namen werden weiterhin nicht aufeinander abgebildet.
+Bei einem Ziel ohne Branches wird der ueber Git-HEAD ermittelte Default-Branch der Quelle zuerst gepusht, sofern die Branch-Auswahl ihn einschliesst. Bei zugeordnetem Provider merkt GitMesh fuer neue oder bisher leere Ziele ausserdem die initiale Default-Einstellung vor, gebunden an die konkrete Repository-ID. Nach dem Kopieren setzt GitMesh den Default-Branch explizit per Provider-API und prueft ihn durch erneutes Lesen. Das sichert insbesondere Forgejo-Instanzen ab, die trotz eines ersten Pushes von main weiterhin beta als Default verwenden. Commit-Zeitpunkte spielen dabei keine Rolle. Im bidirektionalen Modus dient der eingestellte Start-Remote, sonst der erste befuellte Remote als Bezug. Bereits befuellte Ziele ohne ausstehende Initialisierung behalten ihren bestehenden Standardbranch. Ein frueher falsch ausgewaehlter Default in einem bereits befuellten Ziel muss einmal dort auf main umgestellt werden; fuer neue/leere Ziele greift die automatische Absicherung. Unterschiedliche Branch-Namen werden weiterhin nicht aufeinander abgebildet.
 
 
 ## Releases und Anhaenge synchronisieren
@@ -218,7 +218,7 @@ Discovery zeigt zu bereits gespeicherten Repository-Zuordnungen Profilname, Akti
 
 ## Was synchronisieren? (pro Sync)
 
-Jede Repository-Zuordnung besitzt unter **Sync-Profile** den Bereich **Was synchronisieren?**. Die Auswahl wird mit dem Profil gespeichert und in der Statusuebersicht sowie im Job-Protokoll angezeigt. Gemeinsame Profile koennen diese Auswahl fuer ihre Zuordnungen vorgeben; fuer eine abweichende Auswahl **Eigene Regeln** verwenden. Bestehende Konfigurationen behalten Branches und Tags; neue Bereiche sind standardmaessig aus.
+Jede Repository-Zuordnung besitzt unter **Sync-Profile** den Bereich **Was synchronisieren?**. Die Auswahl wird mit dem Profil gespeichert und in der Statusuebersicht sowie im Job-Protokoll angezeigt. Gemeinsame Profile geben die Auswahl vor; abweichende Komponenten koennen direkt pro Sync eingestellt werden und werden als `sync_overrides` gespeichert. Das Abwaehlen von Wiki bleibt damit auch bei einer aktivierten gemeinsamen Wiki-Vorgabe erhalten. Bestehende Konfigurationen behalten Branches und Tags; neue Bereiche sind standardmaessig aus.
 
 | Auswahl | Verhalten |
 | --- | --- |
@@ -252,3 +252,26 @@ Administratoren koennen unter **Jobs & Protokolle** einzelne abgeschlossene Prot
 **Anzeige zuruecksetzen** quittiert einen Fehler/Konflikt einzeln. **Alle Fehler / Konflikte zuruecksetzen** quittiert alle bis zu diesem Zeitstand; auf der Profilkarte geht das auch fuer ein bestimmtes Profil. Quittierte Jobs verlassen den Fehlerzaehler und die roten/gelben Statusanzeigen. Unter **Alle** oder **Zurueckgesetzt** bleiben Originalergebnis, Details sowie Zeitpunkt und Benutzer der Quittierung sichtbar. Die Quittierung bleibt nach einem Neustart erhalten.
 
 Zuruecksetzen startet keinen Sync und aendert keine Repositories. Besteht die Ursache weiterhin, meldet ein neuer Lauf erneut einen Fehler/Konflikt. Erfolgreiche Git-Updates, Provider-Zugangsdaten, Sync-Konfiguration, Zeitplaene und Zuordnungen fuer Releases/Metadaten bleiben von Protokollaktionen unberuehrt. Lesebenutzer koennen diese Aktionen weder im WebIF noch ueber die API ausfuehren.
+
+
+Beim Speichern unter **Sync-Profile** liest das WebIF die Konfiguration erneut vom Server und vergleicht sie mit den uebermittelten Einstellungen. Erst nach identischer Rueckmeldung erscheint **Einstellungen gespeichert**; die Editoren zeigen danach den gespeicherten Stand. Bei einer laufenden Operation und HTTP 409 bleibt der Entwurf erhalten und die Meldung beginnt mit **Nicht gespeichert**. Eine fehlgeschlagene oder abweichende Ruecklesung bestaetigt keinen Erfolg. Lokale Komponenten-Auswahlen werden auch vom Worker nach dem Zusammenfuehren mit gemeinsamen Profilen angewendet; Quell-Remote, Richtung, Konfliktregel und Intervalle lassen sich durch `sync_overrides` nicht umgehen.
+
+
+Ausstehende initiale Default-Branch-Einstellungen werden in SQLite gespeichert und nach einem API-Fehler oder Neustart erneut versucht, auch wenn die Git-Branches bereits kopiert sind. Ein nicht bestaetigter Default ist im Job unter `default_branch.errors` sichtbar und fuehrt zu Fehlerstatus, waehrend erfolgreiche Git-Updates dokumentiert bleiben. Ein API-Lesefehler vor der Vormerkung haelt die ersten Git-Pushes zu diesem leeren Ziel zurueck, damit die Initialisierung im naechsten Lauf wiederholt werden kann. Eine geaenderte Repository-ID oder Remote-Zuordnung verwirft eine alte Vormerkung. Fehlt der Quell-Default oder ist er durch die Branch-Auswahl ausgeschlossen, erfolgt keine API-Umstellung und das Protokoll enthaelt einen Hinweis. Die Vorschau und der separate Wiki-Sync aendern keine Default-Branch-Einstellungen.
+
+
+## Sichtbarer Speichervorgang und Seitenwechsel
+
+Beim Speichern zeigt das WebIF einen festen Hinweis mit Spinner und **Wird gespeichert** an. Das Formular und weitere Einstellungen sind waehrenddessen gegen Aenderungen gesperrt; die Speichern-Schaltflaeche verhindert doppelte Auftraege. Das gilt fuer Sync-Profile, Provider, Transport, Benutzer, Worker-Einstellungen, gemeinsame Profile/Gruppen und die oeffentliche Webhook-Adresse.
+
+Ein Klick auf eine andere WebIF-Seite wird vorgemerkt: Erst nach erfolgreichem Abschluss inklusive Ruecklesepruefung bei Konfigurationen oeffnet sich die zuletzt angeklickte Seite. Bei einem Fehler wird der Seitenwechsel verworfen, das Formular wieder freigegeben und der Entwurf bleibt sichtbar. Ein Erfolgs-Hinweis bleibt kurz eingeblendet. Neuladen oder Schliessen des Browser-Tabs waehrend eines laufenden Speichervorgangs loest die native Browserwarnung aus; ein erzwungenes Verlassen kann diese Absicherung umgehen.
+
+
+## Aufklappbare Sync-Profile
+
+Gespeicherte Profile erscheinen fuer Administratoren unter **Sync-Profile** als kompakte, standardmaessig eingeklappte Liste mit Name, Aktivstatus und Remote-Richtung. Ein Klick auf die Kopfzeile oder Enter oeffnet die Bearbeitung. Auf der Dashboard-Profilkarte fuehrt **Bearbeiten** direkt zum passenden aufgeklappten Editor. Neue Profile und Discovery-Entwuerfe oeffnen sich sofort.
+
+Einklappen entfernt keine Felder oder Eingaben: **Einstellungen speichern** speichert auch eingeklappte Profile. Geoeffnete Editoren bleiben beim Speichern/erneuten Laden geoeffnet; Statusaktualisierungen klappen sie nicht zu. Liegt ein ungueltiges Pflichtfeld in einem geschlossenen Profil, oeffnet die Browservalidierung es automatisch zur Korrektur. Lesebenutzer behalten die reine Profiluebersicht.
+
+
+Beim Hinzufuegen eines Remotes fuellt die Auswahl unter **Zugangsdaten von Provider** eine leere Git-URL mit der Provider-Adresse vor. Gibt es im selben Sync schon eine passende Repository-URL, wird deren Namespace/Repository-Pfad als Vorschlag uebernommen; GitLab-Untergruppen werden nur fuer GitLab vorgeschlagen. Ohne passenden Pfad erscheint nur die Basisadresse mit dem Hinweis, Namespace/Repository.git zu ergaenzen. Manuell eingegebene URLs bleiben erhalten. **URL vom Provider uebernehmen** uebernimmt den Vorschlag bei Bedarf ausdruecklich. Automatisch vorgeschlagene URLs wechseln bei einer anderen Provider-Auswahl mit. Zugangsdaten werden nicht in die URL eingebettet.

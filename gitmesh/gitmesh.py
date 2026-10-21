@@ -142,7 +142,7 @@ def _validate_config(config):
     names = set()
     claimed = set()
     for repo in repos:
-        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'worker_set', 'profile', 'releases', 'release_assets', 'release_max_asset_mb', 'sync_branches', *metadata.OPTIONS}:
+        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'worker_set', 'profile', 'releases', 'release_assets', 'release_max_asset_mb', 'sync_branches', 'sync_overrides', *metadata.OPTIONS}:
             raise ValueError('Invalid repository fields')
         name = repo.get('name', '')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', name) or name in names:
@@ -218,6 +218,9 @@ def _validate_config(config):
     return config
 
 
+COMPONENT_FIELDS = {'sync_branches', 'tags', 'releases', 'release_assets', 'release_max_asset_mb', *metadata.OPTIONS}
+
+
 SHARED_FIELDS = {'enabled', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'worker_set', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'webhook_secret_env', 'releases', 'release_assets', 'release_max_asset_mb', 'sync_branches', *metadata.OPTIONS}
 
 
@@ -229,8 +232,13 @@ def resolve_config(config):
         identifier = repo.get('profile', '')
         if identifier and identifier not in profiles:
             raise ValueError('Gemeinsames Profil nicht gefunden')
-        # Group policy is authoritative; individual mappings retain URLs, identity and providers.
-        result['repositories'].append(dict(repo, **profiles.get(identifier, {})))
+        overrides = repo.get('sync_overrides', {})
+        if not isinstance(overrides, dict) or set(overrides) - COMPONENT_FIELDS:
+            raise ValueError('Ungueltige lokale Sync-Auswahl')
+        # Shared timing/policy stays authoritative; explicit component choices are local.
+        effective = dict(repo, **profiles.get(identifier, {}))
+        effective.update(overrides)
+        result['repositories'].append(effective)
     return result
 
 
@@ -359,22 +367,25 @@ def repository_tools():
     return inspection.RepositoryTools(git, fetch_snapshots, DATA, redact_git_output)
 
 
-def prioritize_initial_default(repo, path, snapshots, plan):
-    empty = {remote for remote, refs in snapshots.items() if not any(ref.startswith('heads/') for ref in refs)}
-    if not empty or not any(remote in empty and ref.startswith('heads/') for remote, ref, _, _ in plan):
-        return plan
+def source_default_branch(repo, path, snapshots):
     source = repo.get('source')
     if source not in snapshots or not any(ref.startswith('heads/') for ref in snapshots[source]):
         source = next((remote for remote in repo['remotes'] if any(ref.startswith('heads/') for ref in snapshots[remote])), None)
     if not source:
-        return plan
+        return None
     advertised = git(path, 'ls-remote', '--symref', source, 'HEAD').stdout
-    default = next((parts[1].removeprefix('refs/') for line in advertised.splitlines()
-                    if len(parts := line.split()) == 3 and parts[0] == 'ref:' and parts[2] == 'HEAD'
-                    and parts[1].startswith('refs/heads/') and parts[1].removeprefix('refs/') in snapshots[source]), None)
+    return next((parts[1].removeprefix('refs/') for line in advertised.splitlines()
+                 if len(parts := line.split()) == 3 and parts[0] == 'ref:' and parts[2] == 'HEAD'
+                 and parts[1].startswith('refs/heads/') and parts[1].removeprefix('refs/') in snapshots[source]), None)
+
+
+def prioritize_initial_default(repo, path, snapshots, plan, default=None):
+    empty = {remote for remote, refs in snapshots.items() if not any(ref.startswith('heads/') for ref in refs)}
+    if not empty or not any(remote in empty and ref.startswith('heads/') for remote, ref, _, _ in plan):
+        return plan
+    default = default or source_default_branch(repo, path, snapshots)
     if not default:
         return plan
-    # Only reorder initial updates; do not modify server settings or bypass branch filters.
     return sorted(plan, key=lambda item: 0 if item[0] in empty and item[1] == default else 1)
 
 
@@ -404,7 +415,7 @@ def sync_lfs(repo, path, snapshots):
 def sync_wiki(repo):
     # Nested cache retains the same remote names for existing credential/SSH scoping.
     wiki = dict(repo, name=repo['name'] + '/wiki.git', direction='one-way', policy='ff-only',
-                sync_branches=True, branches=[], tags=False, releases=False, create_missing=False,
+                sync_branches=True, branches=[], tags=False, releases=False, create_missing=False, _wiki_cache=True,
                 auto_webhooks=False, **{key: False for key in metadata.OPTIONS})
     wiki['remotes'] = {name: url.removesuffix('.git') + '.wiki.git' for name, url in repo['remotes'].items()}
     status, details = synchronize(wiki)
@@ -449,7 +460,9 @@ def synchronize(repo, dry_run=False):
                 conflicts.append(ref + ' @ ' + remote)
                 continue
             plan.append((remote, ref, winner, old))
-    plan = prioritize_initial_default(repo, path, snapshots, plan)
+    initial = {remote for remote, refs in snapshots.items() if remote != source and repo.get('remote_providers', {}).get(remote) and not repo.get('_wiki_cache') and (remote in created or not any(ref.startswith('heads/') for ref in refs)) and any(item[0] == remote and item[1].startswith('heads/') for item in plan)}
+    default = source_default_branch(repo, path, snapshots) if initial else None
+    plan = prioritize_initial_default(repo, path, snapshots, plan, default)
     if dry_run:
         return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing, 'selected_components': selected_components(repo), 'note': 'Vorschau plant Git-Referenzen; Metadaten, Wiki und LFS werden erst beim echten Sync verarbeitet.'}
     hooks = []
@@ -457,9 +470,21 @@ def synchronize(repo, dry_run=False):
         hooks = control().register_hooks(repo, load_config().get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''), refresh_secret=False)
     if conflicts and policy == 'reject':
         return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
+    default_errors, default_warnings, blocked_initial = [], [], set()
+    for remote in sorted(initial):
+        if default and any(item[0] == remote and item[1] == default for item in plan):
+            try:
+                control().queue_initial_default(repo, remote, default.removeprefix('heads/'))
+            except (management.ProviderError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                blocked_initial.add(remote)
+                default_errors.append({'remote': remote, 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Initialer Default-Branch konnte nicht vorgemerkt werden'})
+        else:
+            default_warnings.append({'remote': remote, 'branch': default.removeprefix('heads/') if default else None, 'message': 'Quell-Default nicht ermittelbar oder durch Branch-Auswahl ausgeschlossen'})
     if repo.get('lfs'):
         sync_lfs(repo, path, snapshots)
     for remote, ref, winner, old in plan:
+        if remote in blocked_initial:
+            continue
         args = ['push']
         if policy == 'force-with-lease':
             args.append(f'--force-with-lease=refs/{ref}:{old or ""}')
@@ -467,6 +492,10 @@ def synchronize(repo, dry_run=False):
         snapshots[remote][ref] = winner
         actions.append(f'{remote}: {ref} -> {winner[:12]}')
     details = {'updated': actions, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks, 'selected_components': selected_components(repo)}
+    if repo.get('remote_providers') and not repo.get('_wiki_cache'):
+        details['default_branch'] = control().apply_initial_defaults(repo, snapshots)
+        details['default_branch']['errors'].extend(default_errors)
+        details['default_branch']['warnings'].extend(default_warnings)
     if repo.get('lfs'):
         details['lfs'] = 'success'
     if any(repo.get(key) for key in metadata.OPTIONS if key not in ('wiki', 'lfs')):
@@ -481,7 +510,7 @@ def synchronize(repo, dry_run=False):
             details['releases'] = releases.ReleaseSync(control()).sync(repo, snapshots)
         except (management.ProviderError, ValueError, TypeError, KeyError, AttributeError) as exc:
             details['releases'] = {'errors': [{'message': str(exc) if isinstance(exc, management.ProviderError) else 'Release-Sync fehlgeschlagen'}]}
-    if details.get('releases', {}).get('errors') or details.get('metadata', {}).get('errors') or details.get('wiki', {}).get('status') == 'error':
+    if details.get('default_branch', {}).get('errors') or details.get('releases', {}).get('errors') or details.get('metadata', {}).get('errors') or details.get('wiki', {}).get('status') == 'error':
         return 'error', details
     if (details.get('releases', {}).get('conflicts') or any(asset['status'] == 'conflict' for asset in details.get('releases', {}).get('assets', []))
             or details.get('metadata', {}).get('counts', {}).get('conflict') or details.get('wiki', {}).get('status') == 'conflict'):

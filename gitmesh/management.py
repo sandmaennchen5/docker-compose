@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+import fnmatch
 import hmac
 import json
 import math
@@ -94,6 +95,10 @@ class Control:
               finished REAL, attempts INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL DEFAULT '{}');
             CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(profile)
               WHERE status IN ('queued','running');
+            CREATE TABLE IF NOT EXISTS initial_defaults (
+              profile TEXT NOT NULL, remote TEXT NOT NULL, scope TEXT NOT NULL,
+              provider TEXT NOT NULL, url TEXT NOT NULL, repository_id INTEGER NOT NULL,
+              branch TEXT NOT NULL, PRIMARY KEY(profile,remote));
             CREATE TABLE IF NOT EXISTS job_resets (
               job_id INTEGER PRIMARY KEY, reset_at REAL NOT NULL, reset_by TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS schedules (
@@ -292,6 +297,64 @@ class Control:
                     pass
             raise
         return True
+
+    @staticmethod
+    def default_scope(repo):
+        return hashlib.sha256(json.dumps([repo['remotes'], repo.get('remote_providers', {}), repo.get('source')], sort_keys=True).encode()).hexdigest()
+
+    def repository_endpoint(self, provider, url):
+        owner, name = self.repository_path(provider, url)
+        return '/projects/' + quote(owner + '/' + name, safe='') if provider['kind'] == 'gitlab' else '/repos/' + quote(owner, safe='') + '/' + quote(name, safe='')
+
+    def queue_initial_default(self, repo, remote, branch):
+        identifier = repo['remote_providers'][remote]
+        provider = self.provider(identifier, reveal=True)
+        url = repo['remotes'][remote]
+        current = self.api(provider, self.repository_endpoint(provider, url))
+        if type(current.get('id')) is not int:
+            raise ProviderError('Ziel-Repository konnte fuer Default-Branch nicht identifiziert werden')
+        with self.db() as db:
+            db.execute('INSERT OR REPLACE INTO initial_defaults VALUES(?,?,?,?,?,?,?)',
+                       (repo['name'], remote, self.default_scope(repo), identifier, url, current['id'], branch))
+
+    def apply_initial_defaults(self, repo, snapshots):
+        result = {'items': [], 'errors': [], 'warnings': []}
+        with self.db() as db:
+            pending = db.execute('SELECT * FROM initial_defaults WHERE profile=?', (repo['name'],)).fetchall()
+        for row in pending:
+            remote, branch = row['remote'], row['branch']
+            if row['scope'] != self.default_scope(repo):
+                with self.db() as db:
+                    db.execute('DELETE FROM initial_defaults WHERE profile=? AND remote=?', (repo['name'], remote))
+                continue
+            # Only a successfully copied, selected branch may become the default.
+            if (not repo.get('sync_branches', True) or 'heads/' + branch not in snapshots.get(remote, {})
+                    or repo.get('branches') and not any(fnmatch.fnmatchcase(branch, pattern) for pattern in repo['branches'])):
+                result['warnings'].append({'remote': remote, 'branch': branch, 'message': 'Initialer Default-Branch noch nicht kopiert oder durch Auswahl ausgeschlossen'})
+                continue
+            try:
+                provider = self.provider(row['provider'], reveal=True)
+                endpoint = self.repository_endpoint(provider, row['url'])
+                current = self.api(provider, endpoint)
+                if current.get('id') != row['repository_id']:
+                    # A repository replaced outside this operation is not ours to modify.
+                    with self.db() as db:
+                        db.execute('DELETE FROM initial_defaults WHERE profile=? AND remote=?', (repo['name'], remote))
+                    result['warnings'].append({'remote': remote, 'message': 'Repository-ID geaendert; ausstehende Default-Branch-Einstellung verworfen'})
+                    continue
+                status = 'unchanged'
+                if current.get('default_branch') != branch:
+                    self.api(provider, endpoint, method='PUT' if provider['kind'] == 'gitlab' else 'PATCH', body={'default_branch': branch})
+                    checked = self.api(provider, endpoint)
+                    if checked.get('id') != row['repository_id'] or checked.get('default_branch') != branch:
+                        raise ProviderError('Default-Branch wurde vom Provider nicht uebernommen')
+                    status = 'updated'
+                with self.db() as db:
+                    db.execute('DELETE FROM initial_defaults WHERE profile=? AND remote=?', (repo['name'], remote))
+                result['items'].append({'remote': remote, 'branch': branch, 'status': status})
+            except (ProviderError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                result['errors'].append({'remote': remote, 'branch': branch, 'message': str(exc) if isinstance(exc, ProviderError) else 'Initialer Default-Branch konnte nicht gesetzt werden'})
+        return result
 
     def repository_exists(self, identifier, clone_url):
         provider = self.provider(identifier, reveal=True)

@@ -64,6 +64,7 @@ async function main() {
       await page.locator('#provider-form button').first().click();
       assert.equal((await saved).status(), 200);
       await page.waitForFunction(() => document.getElementById('provider-id').value === '' && document.getElementById('provider-name').value === '');
+    await page.waitForFunction(() => activeSave === null);
     }
     const providers = (await api('/api/providers')).providers;
     assert.equal(providers.length, 2);
@@ -78,6 +79,7 @@ async function main() {
     await page.locator('#provider-form button').first().click();
     assert.equal((await edited).status(), 200);
     await page.waitForFunction(() => document.getElementById('provider-name').value === '');
+    await page.waitForFunction(() => activeSave === null);
     await page.locator('#provider-name').fill('Third');
     await page.locator('#provider-kind').selectOption('forgejo');
     await page.locator('#provider-url').fill('http://127.0.0.1:34051');
@@ -86,6 +88,7 @@ async function main() {
     await page.locator('#provider-form button').first().click();
     assert.equal((await created).status(), 200);
     await page.waitForFunction(() => document.getElementById('provider-name').value === '');
+    await page.waitForFunction(() => activeSave === null);
     const afterEdit = (await api('/api/providers')).providers;
     assert.equal(afterEdit.find(p => p.name === 'Third').allow_http, true);
     await page.locator('#provider-list article').filter({has: page.getByRole('heading', {name: 'Third', exact: true})}).getByRole('button', {name: 'Bearbeiten', exact: true}).click();
@@ -116,7 +119,22 @@ async function main() {
     await page.locator('#page-profiles').waitFor({state: 'visible'});
     const profile = page.locator('.repo-editor');
     assert.equal(await profile.count(), 1);
+    assert.equal(await profile.evaluate(node => node.open), true, 'New discovery drafts open for editing');
     assert.equal(await profile.locator('.repo-enabled').isChecked(), false);
+    await profile.getByRole('button', {name: 'Remote hinzufügen', exact: true}).click();
+    const proposedRemote = profile.locator('.remote-row').last();
+    await proposedRemote.locator('.remote-name').fill('extra');
+    await proposedRemote.locator('.remote-provider').selectOption(target.id);
+    assert.equal(await proposedRemote.locator('.remote-url').inputValue(), 'https://target.example.invalid/team/project.git');
+    await proposedRemote.locator('.remote-provider').selectOption(source.id);
+    assert.equal(await proposedRemote.locator('.remote-url').inputValue(), source.url + '/team/project.git');
+    await proposedRemote.locator('.remote-url').fill('https://manual.example/own/repo.git');
+    await proposedRemote.locator('.remote-provider').selectOption(target.id);
+    assert.equal(await proposedRemote.locator('.remote-url').inputValue(), 'https://manual.example/own/repo.git', 'Manual URLs must remain intact');
+    await proposedRemote.getByRole('button', {name: 'URL vom Provider uebernehmen', exact: true}).click();
+    assert.equal(await proposedRemote.locator('.remote-url').inputValue(), target.url + '/own/repo.git');
+    await proposedRemote.getByRole('button', {name: 'Remote entfernen', exact: true}).click();
+
     await profile.locator('.repo-branches').fill('main, release/*');
     await profile.locator('.repo-interval').fill('0');
     await profile.locator('.repo-tags').uncheck();
@@ -126,8 +144,11 @@ async function main() {
     assert.equal(await profile.locator('.repo-create').isChecked(), false);
     await profile.locator('.repo-create').check();
     assert.equal(await profile.locator('.repo-create-private').isChecked(), true);
+    await profile.locator(':scope > summary').click();
+    assert.equal(await profile.locator('.repo-editor-body').isVisible(), false);
     await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
     await page.getByRole('status').filter({hasText: 'Einstellungen gespeichert.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
     const settings = await api('/api/settings');
     assert.deepEqual(settings.repositories[0].branches, ['main', 'release/*']);
     assert.equal(settings.repositories[0].interval, 0);
@@ -137,6 +158,90 @@ async function main() {
     assert.equal(settings.repositories[0].create_private, true);
     assert.equal(settings.repositories[0].remote_providers.target, target.id);
     assert.equal(settings.repositories[0].remotes.target, 'https://target.example.invalid/mirror/project.git');
+    assert.equal(await profile.evaluate(node => node.open), false, 'Saving retains collapsed state and all field values');
+    await profile.locator(':scope > summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await profile.evaluate(node => node.open), true, 'Keyboard expands the editor');
+    // Unchecking Wiki must survive a blocked save, a real save and a reload.
+    await profile.locator('.repo-wiki').uncheck();
+    await page.getByRole('status').filter({hasText: 'Ungespeicherte Aenderungen.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    let releaseBlockedSave;
+    const blockedSaveGate = new Promise(resolve => { releaseBlockedSave = resolve; });
+    await page.route('**/api/settings', async route => {
+      if (route.request().method() === 'POST') { await blockedSaveGate; return route.fulfill({status: 409, json: {error: 'Synchronisierung laeuft'}}); }
+      return route.continue();
+    });
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    await page.locator('#save-progress[data-state="saving"]').waitFor();
+    assert.equal(await page.locator('#settings-form button').filter({hasText: 'Wird gespeichert'}).isDisabled(), true);
+    assert.equal(await page.locator('#logout').isDisabled(), true);
+    await page.locator('[data-page=dashboard]').click();
+    assert.equal(await page.locator('#page-profiles').isVisible(), true, 'Pending save must retain the source page');
+    assert.equal(await page.locator('#page-dashboard').isVisible(), false);
+    assert.equal(await page.evaluate(() => { const event = new Event('beforeunload', {cancelable: true}); window.dispatchEvent(event); return event.defaultPrevented; }), true);
+    if (process.env.GITMESH_SAVING_SCREENSHOT) await page.screenshot({path: process.env.GITMESH_SAVING_SCREENSHOT});
+    releaseBlockedSave();
+    await page.getByRole('status').filter({hasText: 'Nicht gespeichert:'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    await page.locator('#save-progress[data-state="error"]').waitFor();
+    assert.equal(await page.locator('#page-profiles').isVisible(), true, 'Failed save must cancel the requested navigation');
+    assert.equal((await api('/api/settings')).repositories[0].wiki, true);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), false, 'Blocked save must retain the draft');
+    await page.unroute('**/api/settings');
+    let releaseSuccessfulSave, savingPosts = 0;
+    const successfulSaveGate = new Promise(resolve => { releaseSuccessfulSave = resolve; });
+    await page.route('**/api/settings', async route => {
+      if (route.request().method() === 'POST') { savingPosts++; await successfulSaveGate; }
+      return route.continue();
+    });
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    await page.locator('#save-progress[data-state="saving"]').waitFor();
+    await page.locator('[data-page=jobs]').click();
+    assert.equal(await page.locator('#page-profiles').isVisible(), true);
+    await page.evaluate(() => document.getElementById('settings-form').requestSubmit());
+    releaseSuccessfulSave();
+    await page.locator('#save-progress[data-state="saved"]').waitFor();
+    await page.locator('#page-jobs').waitFor({state: 'visible'});
+    assert.equal(savingPosts, 1, 'Repeated submit must not issue a second write');
+    assert.equal((await api('/api/settings')).repositories[0].wiki, false);
+    assert.equal(await page.evaluate(() => document.querySelector('#workspace .content').inert), false);
+    await page.unroute('**/api/settings');
+    await page.locator('[data-page=profiles]').click();
+    await page.locator('#reload').click();
+    await page.getByRole('status').filter({hasText: 'Gespeicherten Stand geladen.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), false);
+    // A differing read-back must never produce a success message.
+    await page.route('**/api/settings', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const response = await route.fetch(), value = await response.json();
+      value.repositories[0].wiki = true;
+      await route.fulfill({response, json: value});
+    });
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    await page.getByRole('status').filter({hasText: 'Speicherung nicht bestaetigt:'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), false);
+    await page.unroute('**/api/settings');
+    let releaseVerification;
+    const verificationGate = new Promise(resolve => { releaseVerification = resolve; });
+    let verificationStarted;
+    const verificationRequest = new Promise(resolve => { verificationStarted = resolve; });
+    await page.route('**/api/settings', async route => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const response = await route.fetch(); verificationStarted(); await verificationGate;
+      await route.fulfill({response});
+    });
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    await verificationRequest;
+    await page.locator('[data-page=dashboard]').click();
+    assert.equal(await page.locator('#page-profiles').isVisible(), true, 'Read-back verification is part of saving');
+    assert.equal(await page.locator('#save-progress').getAttribute('data-state'), 'saving');
+    releaseVerification();
+    await page.locator('#page-dashboard').waitFor({state: 'visible'});
+    await page.unroute('**/api/settings');
+    await page.locator('[data-page=profiles]').click();
     // Open logs must survive the real five-second poll and changed job details.
     let logVersion = 1, statusSequence = 0;
     await page.route('**/api/status', async route => {
@@ -178,6 +283,7 @@ async function main() {
     assert.equal((await api('/api/jobs')).jobs.find(j => j.id === failedLog.id).status, 'error');
     await page.locator('#logs-reset').click();
     await page.getByRole('status').filter({hasText: '1 Fehler-/Konfliktanzeigen zurueckgesetzt.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
     await page.locator('#job-filter').selectOption('reset');
     await page.waitForFunction(() => document.querySelectorAll('#jobs article').length === 2);
     assert.equal(await page.locator('#jobs article').count(), 2);
@@ -231,6 +337,7 @@ async function main() {
     await page.locator('#public-url').fill('https://mesh.example.invalid');
     await page.locator('#hook-settings button').first().click();
     await page.getByRole('status').filter({hasText: 'Oeffentliche Adresse gespeichert.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
     assert.equal((await api('/api/settings')).public_url, 'https://mesh.example.invalid');
     await page.locator('[data-page=groups]').click();
     await page.locator('#group-name').fill('team');
@@ -246,6 +353,7 @@ async function main() {
     await page.locator('#shared-worker').fill('team');
     await page.locator('#shared-enabled').uncheck();
     await page.locator('#shared-releases').check();
+    await page.locator('#shared-wiki').check();
     await page.locator('#shared-release-max').fill('64');
     await page.locator('#shared-form button').first().click();
     await page.locator('#shared-list h2').filter({hasText: /^shared-test$/}).waitFor();
@@ -253,11 +361,23 @@ async function main() {
     await profile.locator('.repo-shared').selectOption('shared-test');
     assert.equal(await profile.locator('.repo-branches').isDisabled(), true);
     assert.equal(await profile.locator('.repo-releases').isChecked(), true);
-    assert.equal(await profile.locator('.repo-releases').isDisabled(), true);
+    assert.equal(await profile.locator('.repo-releases').isDisabled(), false);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), true);
+    assert.equal(await profile.locator('.repo-wiki').isDisabled(), false);
+    await profile.locator('.repo-wiki').uncheck();
     assert.equal(await profile.locator('.repo-release-max').inputValue(), '64');
     const sharedSaved = page.waitForResponse(r => r.url().endsWith('/api/settings') && r.request().method() === 'POST');
     await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
     assert.equal((await sharedSaved).status(), 200);
+    await page.getByRole('status').filter({hasText: 'Einstellungen gespeichert.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    assert.equal((await api('/api/settings')).repositories[0].sync_overrides.wiki, false);
+    assert.equal((await api('/api/settings')).profiles['shared-test'].wiki, true);
+    await page.locator('#reload').click();
+    await page.getByRole('status').filter({hasText: 'Gespeicherten Stand geladen.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), false);
+    assert.equal((await api('/api/status')).repositories[0].selected_components.includes('wiki'), false);
     assert.equal((await api('/api/settings')).repositories[0].profile, 'shared-test');
     assert.equal((await api('/api/settings')).profiles['shared-test'].releases, true);
     await page.locator('[data-page=providers]').click();
@@ -267,6 +387,7 @@ async function main() {
     await page.locator('#transport-protocol').selectOption('https');
     await page.locator('#transport-form button').last().click();
     await page.getByRole('status').filter({hasText: 'Transport gespeichert.'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
     assert.equal((await api('/api/transport?id=' + target.id)).protocol, 'https');
     await page.locator('[data-page=users]').click();
     for (const [name, role] of [['test-admin', 'admin'], ['test-reader', 'readonly']]) {
@@ -276,6 +397,7 @@ async function main() {
       const saved = page.waitForResponse(r => r.url().endsWith('/api/users') && r.request().method() === 'POST');
       await page.locator('#user-form button').click(); assert.equal((await saved).status(), 200);
       await page.waitForFunction(() => document.getElementById('user-name').value === '');
+    await page.waitForFunction(() => activeSave === null);
     }
     await page.locator('#logout').click();
     await page.locator('#auth').waitFor({state: 'visible'});
@@ -305,6 +427,31 @@ async function main() {
     assert.equal(await profile.locator('.repo-branches').inputValue(), 'main, release/*');
     assert.equal(await profile.locator('.repo-create').isChecked(), true);
     assert.equal(await profile.locator('.repo-create-private').isChecked(), true);
+    assert.equal(await profile.locator('.repo-wiki').isChecked(), false, 'Wiki override must persist across logout/login');
+    assert.equal(await profile.evaluate(node => node.open), false, 'Saved profiles initially load collapsed');
+    assert.equal(await page.locator('#profile-summary').isVisible(), false, 'Administrators see one compact list');
+    await page.locator('[data-page=dashboard]').click();
+    await page.locator('#repos').getByRole('button', {name: 'Bearbeiten', exact: true}).click();
+    await page.locator('#page-profiles').waitFor({state: 'visible'});
+    assert.equal(await profile.evaluate(node => node.open), true, 'Overview edit button opens the matching profile');
+    await page.locator('#add-repo').click();
+    const invalidDraft = page.locator('.repo-editor').last();
+    assert.equal(await invalidDraft.evaluate(node => node.open), true);
+    const blankRemote = invalidDraft.locator('.remote-row').first();
+    await blankRemote.locator('.remote-provider').selectOption(source.id);
+    assert.equal(await blankRemote.locator('.remote-url').inputValue(), source.url + '/');
+    assert.equal(await blankRemote.locator('.remote-url').evaluate(input => input.validity.customError), true);
+    await blankRemote.locator('.remote-url').fill(source.url + '/team/new.git');
+    assert.equal(await blankRemote.locator('.remote-url').evaluate(input => input.validity.customError), false);
+
+    await invalidDraft.locator(':scope > summary').click();
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    assert.equal(await invalidDraft.evaluate(node => node.open), true, 'Invalid collapsed fields must open for correction');
+    assert.equal(await page.evaluate(() => activeSave === null), true);
+    await invalidDraft.getByRole('button', {name: 'Profil entfernen', exact: true}).click();
+    assert.equal(await profile.count(), 1);
+    await profile.locator(':scope > summary').click();
+
     if (process.env.GITMESH_SCREENSHOT) await page.screenshot({path: process.env.GITMESH_SCREENSHOT, fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'Mobile page must fit viewport');

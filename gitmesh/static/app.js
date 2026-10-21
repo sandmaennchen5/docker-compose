@@ -1,6 +1,7 @@
 'use strict';
 let token = '', actor = null, providers = [], configuration = null, latest = null, discovered = [], discoveryNext = null;
 const openedJobDetails = new Set();
+let activeSave = null, saveNoticeTimer = null;
 const el = id => document.getElementById(id);
 const admin = () => actor?.role === 'admin';
 const message = text => { el('message').textContent = text; };
@@ -35,10 +36,56 @@ function providerOptions(optional = true) {
   return [...(optional ? [['', 'Ohne Provider / SSH']] : []), ...providers.map(p => [p.id, p.name])];
 }
 function navigate(page) {
+  if (activeSave) {
+    activeSave.nextPage = page;
+    el('save-progress-text').textContent = 'Wird gespeichert. Seitenwechsel erfolgt nach erfolgreichem Abschluss.';
+    document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('pending-page', b.dataset.page === page));
+    return;
+  }
   if (page === 'discovery' && discovered.length) renderDiscovery();
   document.querySelectorAll('.page').forEach(p => { p.hidden = p.id !== 'page-' + page; });
   document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('selected', b.dataset.page === page));
 }
+function saveForm(id, work) {
+  el(id).addEventListener('submit', event => {
+    event.preventDefault();
+    runSave(el(id), work).catch(showError);
+  });
+}
+async function runSave(form, work) {
+  if (activeSave) return activeSave.promise;
+  const state = {nextPage: null}, content = document.querySelector('#workspace .content');
+  const submit = form?.querySelector('button:not([type]), button[type="submit"]');
+  const submitText = submit?.textContent, submitDisabled = submit?.disabled, logoutDisabled = el('logout').disabled;
+  clearTimeout(saveNoticeTimer);
+  activeSave = state;
+  el('save-progress').hidden = false; el('save-progress').dataset.state = 'saving';
+  el('save-progress-text').textContent = 'Wird gespeichert und geprueft. Bitte warten ...';
+  content.inert = true; content.setAttribute('aria-busy', 'true'); el('logout').disabled = true;
+  if (submit) { submit.disabled = true; submit.textContent = 'Wird gespeichert ...'; }
+  let success = false;
+  state.promise = Promise.resolve().then(work);
+  try {
+    const value = await state.promise;
+    success = true;
+    return value;
+  } finally {
+    activeSave = null;
+    content.inert = false; content.removeAttribute('aria-busy'); el('logout').disabled = logoutDisabled;
+    if (submit?.isConnected) { submit.disabled = submitDisabled; if (submit.textContent === 'Wird gespeichert ...') submit.textContent = submitText; }
+    document.querySelectorAll('[data-page]').forEach(b => b.classList.remove('pending-page'));
+    el('save-progress').dataset.state = success ? 'saved' : 'error';
+    el('save-progress-text').textContent = success ? 'Gespeichert.' : 'Speichern fehlgeschlagen. Bitte die Meldung pruefen und erneut speichern.';
+    if (!token) el('save-progress').hidden = true;
+    else if (success) {
+      saveNoticeTimer = setTimeout(() => { if (!activeSave) el('save-progress').hidden = true; }, 5000);
+      if (state.nextPage) navigate(state.nextPage);
+    }
+  }
+}
+window.addEventListener('beforeunload', event => {
+  if (activeSave) { event.preventDefault(); event.returnValue = ''; }
+});
 function applyRole() {
   document.querySelectorAll('[data-admin]').forEach(n => { n.hidden = !admin(); });
   el('identity').textContent = actor.name + ' · ' + (admin() ? 'Administrator' : 'Nur lesen');
@@ -51,6 +98,7 @@ function resetProviderForm() {
   el('provider-save').textContent = 'Provider hinzufügen';
 }
 function clearSession() {
+  clearTimeout(saveNoticeTimer); el('save-progress').hidden = true;
   openedJobDetails.clear();
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
@@ -68,13 +116,64 @@ async function connect(value) {
   applyRole(); navigate('dashboard'); await refresh();
   message('Verbunden. ' + (actor.name === 'bootstrap' ? 'Unter Benutzer einen persönlichen Administrator anlegen.' : 'Willkommen, ' + actor.name + '.'));
 }
+function suggestedRemoteUrl(row, provider) {
+  const base = provider.url.replace(/\/+$/, '');
+  const candidates = [row, ...[...row.closest('.repo-editor').querySelectorAll('.remote-row')].filter(other => other !== row)];
+  for (const other of candidates) {
+    const value = other.querySelector('.remote-url').value.trim();
+    if (!value) continue;
+    try {
+      const parsed = new URL(value);
+      if (!['https:', 'http:', 'ssh:'].includes(parsed.protocol) || parsed.password) continue;
+      let path = parsed.pathname.replace(/\/+$/, '');
+      const owner = providers.find(p => {
+        try { const base = new URL(p.url); return base.hostname === parsed.hostname && path.startsWith(base.pathname.replace(/\/+$/, '') + '/'); } catch (_) { return false; }
+      });
+      if (owner) {
+        const prefix = new URL(owner.url).pathname.replace(/\/+$/, '');
+        if (prefix && path.startsWith(prefix + '/')) path = path.slice(prefix.length);
+      }
+      const parts = path.replace(/^\/+/, '').replace(/\.git$/, '').split('/');
+      if (parts.length < 2 || parts.some(part => !part || part === '.' || part === '..')) continue;
+      if (provider.kind !== 'gitlab' && parts.length !== 2) continue;
+      return base + '/' + parts.join('/') + '.git';
+    } catch (_) { /* An unfinished URL is not a repository-path suggestion. */ }
+  }
+  return base + '/';
+}
 function remoteEditor(parent, name = '', url = '', provider = '') {
   const row = node('div', '', 'remote-row');
   const nameField = field(row, 'Remote-Name', name, 'remote-name', {required: true, pattern: '[A-Za-z0-9][A-Za-z0-9_-]{0,39}'});
-  field(row, 'Git-URL (HTTPS/SSH)', url, 'remote-url', {required: true, type: 'url'});
-  select(row, 'Zugangsdaten von Provider', providerOptions(), provider, 'remote-provider');
-  row.append(button('Remote entfernen', () => { const card = row.closest('.repo-editor'); row.remove(); updateSource(card); }));
+  const urlField = field(row, 'Git-URL (HTTPS/SSH)', url, 'remote-url', {required: true, type: 'url'});
+  const providerField = select(row, 'Zugangsdaten von Provider', providerOptions(), provider, 'remote-provider');
+  const hint = node('small', '', 'remote-url-hint'); hint.hidden = true;
+  const suggest = button('URL vom Provider uebernehmen', () => fillUrl(true));
+  suggest.classList.add('remote-url-suggest');
+  suggest.hidden = !provider;
+  let generated = '';
+  function fillUrl(force = false) {
+    const selected = providers.find(p => p.id === providerField.value);
+    suggest.hidden = !selected;
+    hint.textContent = ''; hint.hidden = true;
+    if (!selected) return;
+    if (!force && urlField.value.trim() && urlField.value !== generated) {
+      hint.hidden = false;
+      hint.textContent = 'Vorhandene URL bleibt erhalten. Bei Bedarf URL vom Provider uebernehmen.';
+      return;
+    }
+    generated = suggestedRemoteUrl(row, selected); urlField.value = generated;
+    const incomplete = generated === selected.url.replace(/\/+$/, '') + '/';
+    urlField.setCustomValidity(incomplete ? 'Bitte Namespace und Repository zur Provider-Adresse ergaenzen.' : '');
+    hint.hidden = false;
+    hint.textContent = incomplete ? 'Namespace/Repository.git bitte ergaenzen.' : 'Repository-Pfad vorgeschlagen. Namespace und Repository bitte pruefen.';
+    urlField.dispatchEvent(new Event('input', {bubbles: true}));
+    if (incomplete) urlField.setCustomValidity('Bitte Namespace und Repository zur Provider-Adresse ergaenzen.');
+  }
+  urlField.addEventListener('input', () => urlField.setCustomValidity(''));
+  providerField.addEventListener('change', () => fillUrl());
+  row.append(button('Remote entfernen', () => { const card = row.closest('.repo-editor'); row.remove(); updateSource(card); updateEditorSummary(card); }));
   nameField.addEventListener('input', () => updateSource(row.closest('.repo-editor')));
+  row.append(suggest, hint);
   parent.append(row);
 }
 function updateSource(card) {
@@ -84,10 +183,18 @@ function updateSource(card) {
   if ([...source.options].some(o => o.value === previous)) source.value = previous;
 }
 const syncOptions = {sync_branches: 'Branches', labels: 'Labels', milestones: 'Meilensteine', issues: 'Issues', comments: 'Kommentare zu Issues / PRs', pull_requests: 'Pull Requests / Merge Requests (eingeschraenkt)', wiki: 'Wiki', lfs: 'Git LFS', repository_details: 'Repository-Beschreibung / Website / Themen'};
-function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', target: ''}}) {
-  repo = {...repo, ...(configuration?.profiles?.[repo.profile] || {})};
-  const card = node('fieldset', '', 'repo-editor');
-  card.append(node('legend', repo.name || 'Neues Profil'));
+function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', target: ''}}, {open = true} = {}) {
+  repo = {...repo, ...(configuration?.profiles?.[repo.profile] || {}), ...(repo.sync_overrides || {})};
+  const card = node('details', '', 'repo-editor'); card.open = open;
+  card.dataset.profileName = repo.name;
+  card._syncOverrides = {...repo.sync_overrides};
+  const summary = node('summary', '', 'repo-editor-summary');
+  const heading = node('span', '', 'repo-editor-heading');
+  heading.append(node('strong', repo.name || 'Neues Profil', 'repo-editor-title'), node('small', '', 'repo-editor-meta'));
+  const toggleLabel = node('span', open ? 'Einklappen' : 'Bearbeiten', 'repo-editor-toggle');
+  summary.append(heading, toggleLabel);
+  card.addEventListener('toggle', () => { toggleLabel.textContent = card.open ? 'Einklappen' : 'Bearbeiten'; });
+  const body = node('div', '', 'repo-editor-body'); card.append(summary, body);
   const grid = node('div', '', 'grid');
   const shared = select(grid, 'Gemeinsames Profil', [['', 'Eigene Regeln'], ...Object.keys(configuration?.profiles || {}).map(name => [name, name])], repo.profile || '', 'repo-shared');
   const workerSet = select(grid, 'Worker-Gruppe', [['default', 'Standard'], ...Object.keys(configuration?.worker_sets || {}).map(name => [name, name])], repo.worker_set || 'default', 'repo-worker-set');
@@ -100,6 +207,7 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   const components = node('fieldset', '', 'sync-components'); components.append(node('legend', 'Was synchronisieren?'));
   const choices = node('div', '', 'grid'); components.append(choices);
   for (const [key, label] of Object.entries(syncOptions)) field(choices, label, repo[key] ?? key === 'sync_branches', 'repo-' + key, {type: 'checkbox'});
+  components.append(node('p', 'Diese Auswahl gilt pro Sync. Abweichungen vom gemeinsamen Profil werden als eigene Auswahl gespeichert.'));
   components.append(node('p', 'Metadaten und Wiki: Quelle → Ziele. Kommentare benoetigen Issues oder PRs. PRs nur mit passenden Zielbranches; keine automatischen Merges. Wiki muss auf den Providern verfuegbar sein.'));
   field(choices, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
   field(grid, 'Intervall in Sekunden (leer = Standard; 0 = nur manuell)', repo.interval ?? '', 'repo-interval', {type: 'number', min: 0, max: 86400});
@@ -111,27 +219,51 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   const create = field(grid, 'Fehlende Ziel-Repositories automatisch anlegen', !!repo.create_missing, 'repo-create', {type: 'checkbox'});
   const createPrivate = field(grid, 'Neue Ziele privat anlegen (deaktiviert = öffentlich)', repo.create_private !== false, 'repo-create-private', {type: 'checkbox'});
   const force = field(grid, 'Ich bestätige: Zielhistorie darf im Einwegmodus überschrieben werden.', repo.force_confirmed, 'repo-force', {type: 'checkbox'});
-  shared.addEventListener('change', () => applySharedRules(card));
+  shared.addEventListener('change', () => { card._syncOverrides = {}; applySharedRules(card); });
   const updatePolicy = () => { source.disabled = direction.value !== 'one-way' && !create.checked && !releaseSync.checked && ![...card.querySelectorAll('.sync-components input[type=checkbox]')].some(input => input.checked && !['repo-sync_branches', 'repo-tags', 'repo-lfs', 'repo-release-assets'].some(cls => input.classList.contains(cls))); createPrivate.parentElement.hidden = !create.checked; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
   create.addEventListener('change', updatePolicy); releaseSync.addEventListener('change', updatePolicy);
   policy.addEventListener('change', updatePolicy); direction.addEventListener('change', updatePolicy); updatePolicy();
-  card.append(grid, components);
+  body.append(grid, components);
   components.addEventListener('change', updatePolicy); updatePolicy();
-  const remotes = node('div', '', 'remote-list'); card.append(remotes);
+  const remotes = node('div', '', 'remote-list'); body.append(remotes);
   for (const [name, url] of Object.entries(repo.remotes)) remoteEditor(remotes, name, url, repo.remote_providers?.[name] || '');
   updateSource(card); source.value = repo.source || Object.keys(repo.remotes)[0];
-  card.append(button('Remote hinzufügen', () => { remoteEditor(remotes); updateSource(card); }), button('Profil entfernen', () => card.remove(), 'danger'));
+  const sync = button('Jetzt synchronisieren', async () => {
+    await request('/api/sync', 'POST', {profile: repo.name}); message('Job angefordert: ' + repo.name); await refresh();
+  });
+  sync.disabled = !configuration?.repositories.some(saved => saved.name === repo.name && saved.enabled !== false);
+  sync.title = 'Verwendet das gespeicherte Profil. Aenderungen zuerst speichern.';
+  body.append(sync);
+  body.append(button('Remote hinzufügen', () => { remoteEditor(remotes); updateSource(card); updateEditorSummary(card); }), button('Profil entfernen', () => { card.remove(); message('Ungespeicherte Aenderungen. Bitte Einstellungen speichern.'); }, 'danger'));
+  for (const event of ['input', 'change']) body.addEventListener(event, () => updateEditorSummary(card));
+  updateEditorSummary(card);
   el('editors').append(card);
 }
-async function loadSettings() {
-  configuration = await request('/api/settings');
+function updateEditorSummary(card) {
+  const name = card.querySelector('.repo-name').value.trim();
+  card.dataset.profileName = name;
+  card.querySelector('.repo-editor-title').textContent = name || 'Neues Profil';
+  const names = [...card.querySelectorAll('.remote-name')].map(input => input.value.trim()).filter(Boolean);
+  const arrow = card.querySelector('.repo-direction').value === 'one-way' ? ' \u2192 ' : ' \u2194 ';
+  const job = latest?.jobs.find(job => job.profile === name);
+  const status = job ? ' \u00b7 ' + (job.reset_at ? 'Zurueckgesetzt (' + job.status + ')' : job.status) : '';
+  card.querySelector('.repo-editor-meta').textContent = (card.querySelector('.repo-enabled').checked ? 'Aktiv' : 'Deaktiviert') + ' \u00b7 ' + names.join(arrow) + status;
+}
+function editProfile(name) {
+  navigate('profiles');
+  const card = [...el('editors').children].find(editor => editor.dataset.profileName === name);
+  if (card) { card.open = true; card.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+}
+async function loadSettings(saved) {
+  configuration = saved || await request('/api/settings');
   el('public-url').value = configuration.public_url || '';
   updateToolProfiles();
   el('interval').value = configuration.interval || 300;
   const w = configuration.worker || {};
   el('parallelism').value = w.parallelism ?? 2; el('min-free').value = w.min_free_mb ?? 128;
   el('min-memory').value = w.min_memory_mb ?? 0; el('max-load').value = w.max_load ?? 0;
-  el('editors').replaceChildren(); configuration.repositories.forEach(repoEditor);
+  const expanded = new Set([...el('editors').children].filter(card => card.open).map(card => card.querySelector('.repo-name').value.trim()));
+  el('editors').replaceChildren(); configuration.repositories.forEach(repo => repoEditor(repo, {open: expanded.has(repo.name)}));
   document.querySelectorAll('.repo-editor').forEach(applySharedRules); renderGroups();
 }
 function collectSettings() {
@@ -155,13 +287,33 @@ function collectSettings() {
     const interval = card.querySelector('.repo-interval').value;
     if (interval !== '') repo.interval = Number(interval);
     if (!repo.profile) delete repo.profile;
-    else for (const key of Object.keys(configuration.profiles[repo.profile])) delete repo[key];
+    else {
+      const rules = configuration.profiles[repo.profile], overrides = {};
+      for (const key of Object.keys(rules)) {
+        if (Object.hasOwn(componentFields, key) && repo[key] !== rules[key]) overrides[key] = repo[key];
+        delete repo[key];
+      }
+      if (Object.keys(overrides).length) repo.sync_overrides = overrides;
+    }
     return repo;
   })};
 }
+function settingsSignature(value) {
+  return JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+async function persistSettings(config) {
+  try { await request('/api/settings', 'POST', config); }
+  catch (error) { error.message = 'Nicht gespeichert: ' + error.message; throw error; }
+  let saved;
+  try { saved = await request('/api/settings'); }
+  catch (error) { error.message = 'Speicherung konnte nicht durch erneutes Laden bestaetigt werden: ' + error.message; throw error; }
+  if (settingsSignature(saved) !== settingsSignature(config)) throw new Error('Speicherung nicht bestaetigt: Der gespeicherte Stand weicht von der Auswahl ab. Bitte erneut laden und pruefen.');
+  return saved;
+}
 async function saveSettings() {
-  const config = collectSettings();
-  await request('/api/settings', 'POST', config); configuration = config; updateToolProfiles();
+  const saved = await persistSettings(collectSettings());
+  await loadSettings(saved);
   message('Einstellungen gespeichert.'); await refresh();
 }
 async function loadProviders() {
@@ -214,7 +366,7 @@ function profileCard(repo) {
     });
     sync.disabled = !repo.enabled;
     sync.title = repo.enabled ? 'Profil in die Warteschlange aufnehmen' : 'Profil zuerst aktivieren und speichern';
-    card.append(sync);
+    card.append(sync, button('Bearbeiten', () => editProfile(repo.name)));
     if (latest.jobs.some(j => j.profile === repo.name && !j.reset_at && ['error', 'conflict'].includes(j.status))) card.append(button('Fehler / Konflikte zuruecksetzen', () => manageLogs('reset', {before: latest.snapshot_time, profile: repo.name})));
   }
   return card;
@@ -257,6 +409,8 @@ async function refresh() {
       ['Warteschlange', latest.jobs.filter(j => j.status === 'queued').length], ['Konflikte / Fehler', latest.jobs.filter(j => !j.reset_at && ['conflict', 'error'].includes(j.status)).length]];
     el('stats').replaceChildren(...stats.map(([label, value]) => { const c = node('article', '', 'stat'); c.append(node('strong', String(value)), node('span', label)); return c; }));
     el('repos').replaceChildren(...latest.repositories.map(profileCard)); el('profile-summary').replaceChildren(...latest.repositories.map(profileCard));
+    el('profile-summary').hidden = admin();
+    document.querySelectorAll('.repo-editor').forEach(updateEditorSummary);
     renderJobList(el('recent'), latest.jobs.slice(0, 5)); renderJobs();
     const w = latest.worker, r = w.resources;
     renderGroups(w.groups || {});
@@ -344,35 +498,32 @@ el('logout').addEventListener('click', async () => { try { await request('/api/l
 el('sync-all').addEventListener('click', () => request('/api/sync', 'POST').then(() => { message('Jobs angefordert.'); return refresh(); }).catch(showError));
 el('add-repo').addEventListener('click', () => repoEditor());
 el('reload').addEventListener('click', () => loadSettings().then(() => message('Gespeicherten Stand geladen.')).catch(showError));
-el('settings-form').addEventListener('submit', e => { e.preventDefault(); saveSettings().catch(showError); });
-el('worker-form').addEventListener('submit', async e => {
-  e.preventDefault();
-  try {
-    const saved = await request('/api/settings');
-    saved.worker = {parallelism: Number(el('parallelism').value), min_free_mb: Number(el('min-free').value),
-      min_memory_mb: Number(el('min-memory').value), max_load: Number(el('max-load').value)};
-    await request('/api/settings', 'POST', saved);
-    configuration.worker = saved.worker;
-    message('Worker-Einstellungen gespeichert.'); await refresh();
-  } catch (error) { showError(error); }
+saveForm('settings-form', saveSettings);
+el('settings-form').addEventListener('invalid', event => { const editor = event.target.closest('details.repo-editor'); if (editor) editor.open = true; }, true);
+for (const event of ['input', 'change']) el('settings-form').addEventListener(event, () => message('Ungespeicherte Aenderungen. Bitte Einstellungen speichern.'));
+saveForm('worker-form', async () => {
+  const saved = await request('/api/settings');
+  saved.worker = {parallelism: Number(el('parallelism').value), min_free_mb: Number(el('min-free').value),
+    min_memory_mb: Number(el('min-memory').value), max_load: Number(el('max-load').value)};
+  await persistSettings(saved);
+  configuration.worker = saved.worker;
+  message('Worker-Einstellungen gespeichert.'); await refresh();
 });
 el('provider-new').addEventListener('click', resetProviderForm);
-el('provider-form').addEventListener('submit', async e => {
-  e.preventDefault();
+saveForm('provider-form', async () => {
   try {
     await request('/api/providers', 'POST', {id: el('provider-id').value || undefined, name: el('provider-name').value.trim(), kind: el('provider-kind').value,
       allow_http: el('provider-http').checked, url: el('provider-url').value.trim(), username: el('provider-username').value.trim(), token: el('provider-token').value, clear_token: el('provider-clear').checked});
     resetProviderForm(); await loadProviders(); message('Provider gespeichert.');
-  } catch (error) { el('provider-token').value = ''; showError(error); }
+  } catch (error) { el('provider-token').value = ''; throw error; }
 });
-el('user-form').addEventListener('submit', async e => {
-  e.preventDefault(); const name = el('user-name').value;
+saveForm('user-form', async () => { const name = el('user-name').value;
   try {
     await request('/api/users', 'POST', {name, role: el('user-role').value, password: el('user-password').value, enabled: el('user-enabled').checked});
     el('user-password').value = '';
     if (actor.name === name) { clearSession(); message('Konto aktualisiert. Bitte erneut anmelden.'); }
     else { el('user-form').reset(); await loadUsers(); message('Benutzer gespeichert.'); }
-  } catch (error) { el('user-password').value = ''; showError(error); }
+  } catch (error) { el('user-password').value = ''; throw error; }
 });
 document.querySelectorAll('[data-worker]').forEach(b => b.addEventListener('click', () => request('/api/worker', 'POST', {action: b.dataset.worker}).then(refresh).catch(showError)));
 async function manageLogs(action, body) {
@@ -444,9 +595,8 @@ el('tool-create').addEventListener('submit', async event => {
   event.preventDefault();
   try { toolResult(await toolCall('refs/change', {action: 'create', remote: el('tool-remote').value.trim(), kind: el('tool-kind').value, name: el('tool-name').value.trim(), from_remote: el('tool-from').value.trim(), from_ref: el('tool-from-ref').value.trim()})); await loadToolRefs(); } catch (error) { showError(error); }
 });
-el('hook-settings').addEventListener('submit', async event => {
-  event.preventDefault();
-  try { const config = await request('/api/settings'); config.public_url = el('public-url').value.trim(); await request('/api/settings', 'POST', config); configuration.public_url = config.public_url; message('Oeffentliche Adresse gespeichert.'); } catch (error) { showError(error); }
+saveForm('hook-settings', async () => {
+  const config = await request('/api/settings'); config.public_url = el('public-url').value.trim(); await persistSettings(config); configuration.public_url = config.public_url; message('Oeffentliche Adresse gespeichert.');
 });
 el('tool-hooks').addEventListener('click', () => toolCall('webhooks/register').then(toolResult).catch(showError));
 
@@ -485,22 +635,27 @@ function renderPreview(result) {
   if (result.plan_truncated) root.append(node('p', 'Anzeige auf 200 Updates begrenzt.'));
 }
 
-const sharedFields = {...Object.fromEntries(Object.keys(syncOptions).map(key => [key, key])), enabled: 'enabled', direction: 'direction', source: 'source', policy: 'policy', branches: 'branches', tags: 'tags', interval: 'interval', worker_set: 'worker-set', force_confirmed: 'force', create_missing: 'create', create_private: 'create-private', auto_webhooks: 'hooks', webhook_secret_env: 'secret', releases: 'releases', release_assets: 'release-assets', release_max_asset_mb: 'release-max'};
+const componentFields = {...Object.fromEntries(Object.keys(syncOptions).map(key => [key, key])), tags: 'tags', releases: 'releases', release_assets: 'release-assets', release_max_asset_mb: 'release-max'};
+const sharedFields = {...componentFields, enabled: 'enabled', direction: 'direction', source: 'source', policy: 'policy', branches: 'branches', tags: 'tags', interval: 'interval', worker_set: 'worker-set', force_confirmed: 'force', create_missing: 'create', create_private: 'create-private', auto_webhooks: 'hooks', webhook_secret_env: 'secret', releases: 'releases', release_assets: 'release-assets', release_max_asset_mb: 'release-max'};
 function applySharedRules(card) {
   const rules = configuration?.profiles?.[card.querySelector('.repo-shared').value] || {};
   for (const [key, cls] of Object.entries(sharedFields)) {
     const input = card.querySelector('.repo-' + cls); if (!input) continue;
-    input.disabled = Object.hasOwn(rules, key);
+    input.disabled = Object.hasOwn(rules, key) && !Object.hasOwn(componentFields, key);
     if (Object.hasOwn(rules, key)) {
-      if (input.type === 'checkbox') input.checked = rules[key];
-      else input.value = Array.isArray(rules[key]) ? rules[key].join(', ') : rules[key];
+      const value = Object.hasOwn(componentFields, key) && Object.hasOwn(card._syncOverrides || {}, key) ? card._syncOverrides[key] : rules[key];
+      if (input.type === 'checkbox') input.checked = value;
+      else input.value = Array.isArray(value) ? value.join(', ') : value;
     }
   }
+  updateEditorSummary(card);
 }
 async function saveAdminConfig(edit) {
-  const config = await request('/api/settings'); edit(config);
-  await request('/api/settings', 'POST', config); await loadSettings();
-  message('Gespeichert. Repository-Editoren zeigen den gespeicherten Stand.');
+  return runSave(document.activeElement?.closest('form'), async () => {
+    const config = await request('/api/settings'); edit(config);
+    const saved = await persistSettings(config); await loadSettings(saved);
+    message('Gespeichert. Repository-Editoren zeigen den gespeicherten Stand.');
+  });
 }
 function renderGroups(states = latest?.worker?.groups || {}) {
   if (!configuration) return;
@@ -563,12 +718,10 @@ el('transport-load').addEventListener('click', async () => {
   } catch (error) { showError(error); }
 });
 el('transport-provider').addEventListener('change', () => { const id = el('transport-provider').value; el('transport-form').reset(); el('transport-provider').value = id; el('transport-key').value = ''; el('transport-info').textContent = 'Transport fuer diesen Provider zuerst laden.'; });
-el('transport-form').addEventListener('submit', async e => {
-  e.preventDefault();
+saveForm('transport-form', async () => {
   try {
     const result = await request('/api/transport', 'POST', {id: el('transport-provider').value, protocol: el('transport-protocol').value, ssh_host: el('transport-host').value.trim(), ssh_user: el('transport-user').value.trim(), ssh_port: Number(el('transport-port').value), known_hosts: el('transport-hosts').value, key: el('transport-key').value, clear_key: el('transport-clear').checked});
     el('transport-info').textContent = (result.has_key ? 'Schluessel gespeichert. ' : 'Kein Schluessel gespeichert. ') + (result.fingerprints || []).join(' ');
     message('Transport gespeichert.');
-  } catch (error) { showError(error); }
-  finally { el('transport-key').value = ''; }
+  } finally { el('transport-key').value = ''; }
 });
