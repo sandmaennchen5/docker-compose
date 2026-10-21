@@ -1,5 +1,6 @@
 'use strict';
 let token = '', actor = null, providers = [], configuration = null, latest = null, discovered = [], discoveryNext = null;
+const openedJobDetails = new Set();
 const el = id => document.getElementById(id);
 const admin = () => actor?.role === 'admin';
 const message = text => { el('message').textContent = text; };
@@ -34,6 +35,7 @@ function providerOptions(optional = true) {
   return [...(optional ? [['', 'Ohne Provider / SSH']] : []), ...providers.map(p => [p.id, p.name])];
 }
 function navigate(page) {
+  if (page === 'discovery' && discovered.length) renderDiscovery();
   document.querySelectorAll('.page').forEach(p => { p.hidden = p.id !== 'page-' + page; });
   document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('selected', b.dataset.page === page));
 }
@@ -49,6 +51,7 @@ function resetProviderForm() {
   el('provider-save').textContent = 'Provider hinzufügen';
 }
 function clearSession() {
+  openedJobDetails.clear();
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
   for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'shared-form', 'group-form']) el(id).reset();
@@ -80,6 +83,7 @@ function updateSource(card) {
   card.querySelectorAll('.remote-name').forEach(n => { const o = node('option', n.value); o.value = n.value; source.append(o); });
   if ([...source.options].some(o => o.value === previous)) source.value = previous;
 }
+const syncOptions = {sync_branches: 'Branches', labels: 'Labels', milestones: 'Meilensteine', issues: 'Issues', comments: 'Kommentare zu Issues / PRs', pull_requests: 'Pull Requests / Merge Requests (eingeschraenkt)', wiki: 'Wiki', lfs: 'Git LFS', repository_details: 'Repository-Beschreibung / Website / Themen'};
 function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', target: ''}}) {
   repo = {...repo, ...(configuration?.profiles?.[repo.profile] || {})};
   const card = node('fieldset', '', 'repo-editor');
@@ -93,18 +97,26 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   const source = select(grid, 'Quell-/Start-Remote', [], '', 'repo-source');
   const policy = select(grid, 'Konfliktregel', [['ff-only', 'Fast-forward; Konflikte überspringen'], ['reject', 'Bei Konflikt gesamtes Profil überspringen'], ['force-with-lease', 'Erzwungen mit Zielstand-Prüfung (Einweg)']], repo.policy || 'ff-only', 'repo-policy');
   field(grid, 'Branch-Filter (durch Komma getrennt; leer = alle)', (repo.branches || []).join(', '), 'repo-branches', {placeholder: 'main, release/*'});
-  field(grid, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
+  const components = node('fieldset', '', 'sync-components'); components.append(node('legend', 'Was synchronisieren?'));
+  const choices = node('div', '', 'grid'); components.append(choices);
+  for (const [key, label] of Object.entries(syncOptions)) field(choices, label, repo[key] ?? key === 'sync_branches', 'repo-' + key, {type: 'checkbox'});
+  components.append(node('p', 'Metadaten und Wiki: Quelle → Ziele. Kommentare benoetigen Issues oder PRs. PRs nur mit passenden Zielbranches; keine automatischen Merges. Wiki muss auf den Providern verfuegbar sein.'));
+  field(choices, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
   field(grid, 'Intervall in Sekunden (leer = Standard; 0 = nur manuell)', repo.interval ?? '', 'repo-interval', {type: 'number', min: 0, max: 86400});
   field(grid, 'Webhook-Secret: Umgebungsvariable', repo.webhook_secret_env || 'GITMESH_WEBHOOK_SECRET', 'repo-secret');
   field(grid, 'Webhooks beim Sync automatisch registrieren', !!repo.auto_webhooks, 'repo-hooks', {type: 'checkbox'});
+  const releaseSync = field(choices, 'Releases von Quelle zu Zielen synchronisieren', !!repo.releases, 'repo-releases', {type: 'checkbox'});
+  field(choices, 'Release-Anhaenge mitkopieren', repo.release_assets !== false, 'repo-release-assets', {type: 'checkbox'});
+  field(choices, 'Maximale Groesse je Release-Anhang (MB)', repo.release_max_asset_mb ?? 512, 'repo-release-max', {type: 'number', min: 1, max: 4096});
   const create = field(grid, 'Fehlende Ziel-Repositories automatisch anlegen', !!repo.create_missing, 'repo-create', {type: 'checkbox'});
   const createPrivate = field(grid, 'Neue Ziele privat anlegen (deaktiviert = öffentlich)', repo.create_private !== false, 'repo-create-private', {type: 'checkbox'});
   const force = field(grid, 'Ich bestätige: Zielhistorie darf im Einwegmodus überschrieben werden.', repo.force_confirmed, 'repo-force', {type: 'checkbox'});
   shared.addEventListener('change', () => applySharedRules(card));
-  const updatePolicy = () => { source.disabled = direction.value !== 'one-way' && !create.checked; createPrivate.parentElement.hidden = !create.checked; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
-  create.addEventListener('change', updatePolicy);
+  const updatePolicy = () => { source.disabled = direction.value !== 'one-way' && !create.checked && !releaseSync.checked && ![...card.querySelectorAll('.sync-components input[type=checkbox]')].some(input => input.checked && !['repo-sync_branches', 'repo-tags', 'repo-lfs', 'repo-release-assets'].some(cls => input.classList.contains(cls))); createPrivate.parentElement.hidden = !create.checked; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
+  create.addEventListener('change', updatePolicy); releaseSync.addEventListener('change', updatePolicy);
   policy.addEventListener('change', updatePolicy); direction.addEventListener('change', updatePolicy); updatePolicy();
-  card.append(grid);
+  card.append(grid, components);
+  components.addEventListener('change', updatePolicy); updatePolicy();
   const remotes = node('div', '', 'remote-list'); card.append(remotes);
   for (const [name, url] of Object.entries(repo.remotes)) remoteEditor(remotes, name, url, repo.remote_providers?.[name] || '');
   updateSource(card); source.value = repo.source || Object.keys(repo.remotes)[0];
@@ -133,11 +145,13 @@ function collectSettings() {
     }
     const repo = {profile: card.querySelector('.repo-shared').value, worker_set: card.querySelector('.repo-worker-set').value, name: card.querySelector('.repo-name').value.trim(), enabled: card.querySelector('.repo-enabled').checked,
       direction: card.querySelector('.repo-direction').value, source: card.querySelector('.repo-source').value,
+      releases: card.querySelector('.repo-releases').checked, release_assets: card.querySelector('.repo-release-assets').checked, release_max_asset_mb: Number(card.querySelector('.repo-release-max').value),
       auto_webhooks: card.querySelector('.repo-hooks').checked,
       create_missing: card.querySelector('.repo-create').checked, create_private: card.querySelector('.repo-create-private').checked,
       policy: card.querySelector('.repo-policy').value, force_confirmed: card.querySelector('.repo-force').checked,
       tags: card.querySelector('.repo-tags').checked, branches: card.querySelector('.repo-branches').value.split(',').map(x => x.trim()).filter(Boolean),
       webhook_secret_env: card.querySelector('.repo-secret').value.trim(), remotes, remote_providers};
+    for (const key of Object.keys(syncOptions)) repo[key] = card.querySelector('.repo-' + key).checked;
     const interval = card.querySelector('.repo-interval').value;
     if (interval !== '') repo.interval = Number(interval);
     if (!repo.profile) delete repo.profile;
@@ -185,12 +199,13 @@ async function loadUsers() {
 }
 function profileCard(repo) {
   const job = latest.jobs.find(j => j.profile === repo.name);
-  const card = node('article', '', 'card ' + (job?.status || ''));
+  const card = node('article', '', 'card ' + (job?.reset_at ? 'reset' : job?.status || ''));
   card.append(node('h2', repo.name), node('p', repo.remotes.join(repo.direction === 'one-way' ? ' → ' : ' ↔ ')),
     node('small', (repo.enabled ? 'Aktiv' : 'Deaktiviert') + ' · Nächster Lauf: ' + date(latest.schedules[repo.name])),
-    node('p', job ? job.status + ' · ' + date(job.requested) : 'Noch kein Job'));
+    node('p', job ? (job.reset_at ? 'Zurueckgesetzt (' + job.status + ')' : job.status) + ' · ' + date(job.requested) : 'Noch kein Job'));
   const mapping = node('details'); mapping.append(node('summary', 'Repository-Zuordnung & Regeln'));
   for (const [name, url] of Object.entries(repo.remote_urls || {})) mapping.append(node('p', name + ': ' + url));
+  mapping.append(node('p', 'Was synchronisieren: ' + (repo.selected_components || ['sync_branches', 'tags']).map(key => syncOptions[key] || ({tags: 'Tags', releases: 'Releases'})[key]).join(', ')));
   mapping.append(node('p', 'Konfliktregel: ' + repo.policy + ' | Branches: ' + (repo.branches?.join(', ') || 'alle') + ' | Intervall: ' + repo.interval + ' s'));
   card.append(mapping);
   if (admin()) {
@@ -200,30 +215,49 @@ function profileCard(repo) {
     sync.disabled = !repo.enabled;
     sync.title = repo.enabled ? 'Profil in die Warteschlange aufnehmen' : 'Profil zuerst aktivieren und speichern';
     card.append(sync);
+    if (latest.jobs.some(j => j.profile === repo.name && !j.reset_at && ['error', 'conflict'].includes(j.status))) card.append(button('Fehler / Konflikte zuruecksetzen', () => manageLogs('reset', {before: latest.snapshot_time, profile: repo.name})));
   }
   return card;
 }
-function jobCard(job) {
-  const card = node('article', '', 'card ' + job.status);
-  const head = node('div', '', 'heading'); head.append(node('strong', '#' + job.id + ' · ' + job.profile), node('span', job.status, 'badge'));
+function jobCard(job, previous, scope) {
+  const signature = JSON.stringify(job);
+  if (previous?._jobSignature === signature) return previous;
+  const card = node('article', '', 'card ' + (job.reset_at ? 'reset' : job.status));
+  card.dataset.jobId = String(job.id); card._jobSignature = signature;
+  const head = node('div', '', 'heading'); head.append(node('strong', '#' + job.id + ' · ' + job.profile), node('span', job.reset_at ? 'Zurueckgesetzt (' + job.status + ')' : job.status, 'badge'));
   const details = node('details'); details.append(node('summary', 'Details / Protokoll'), node('pre', JSON.stringify(job.details, null, 2)));
+  const key = scope + ':' + job.id, oldDetails = previous?.querySelector('details');
+  if (oldDetails) details.open = oldDetails.open;
+  else details.open = openedJobDetails.has(key);
+  details.addEventListener('toggle', () => { if (details.open) openedJobDetails.add(key); else openedJobDetails.delete(key); });
   card.append(head, node('p', date(job.requested) + ' · ' + job.origin + ' · Versuche: ' + job.attempts), details);
+  if (job.reset_at) card.append(node('small', 'Anzeige zurueckgesetzt am ' + date(job.reset_at) + ' von ' + job.reset_by));
+  if (admin() && !['queued', 'running'].includes(job.status)) {
+    if (['error', 'conflict'].includes(job.status) && !job.reset_at) card.append(button('Anzeige zuruecksetzen', () => manageLogs('reset', {id: job.id})));
+    card.append(button('Protokoll loeschen', async () => { if (confirm('Protokoll #' + job.id + ' endgueltig loeschen?')) await manageLogs('delete', {id: job.id}); }, 'danger'));
+  }
   if (job.status === 'queued' && admin()) card.append(button('Abbrechen', async () => { await request('/api/jobs/cancel', 'POST', {id: job.id}); await refresh(); }, 'danger'));
   return card;
 }
+function renderJobList(root, jobs) {
+  const existing = new Map([...root.children].map(card => [card.dataset.jobId, card]));
+  const cards = jobs.map(job => jobCard(job, existing.get(String(job.id)), root.id));
+  if (cards.length === root.children.length && cards.every((card, i) => root.children[i] === card)) return;
+  root.replaceChildren(...cards);
+}
 function renderJobs() {
   const filter = el('job-filter').value;
-  el('jobs').replaceChildren(...latest.jobs.filter(j => !filter || j.status === filter).map(jobCard));
+  renderJobList(el('jobs'), latest.jobs.filter(j => !filter || (filter === 'reset' ? !!j.reset_at : !j.reset_at && j.status === filter)));
 }
 async function refresh() {
   if (!token) return;
   try {
     latest = await request('/api/status');
     const stats = [['Profile', latest.repositories.length], ['Aktive Jobs', Object.keys(latest.worker.active).length],
-      ['Warteschlange', latest.jobs.filter(j => j.status === 'queued').length], ['Konflikte / Fehler', latest.jobs.filter(j => ['conflict', 'error'].includes(j.status)).length]];
+      ['Warteschlange', latest.jobs.filter(j => j.status === 'queued').length], ['Konflikte / Fehler', latest.jobs.filter(j => !j.reset_at && ['conflict', 'error'].includes(j.status)).length]];
     el('stats').replaceChildren(...stats.map(([label, value]) => { const c = node('article', '', 'stat'); c.append(node('strong', String(value)), node('span', label)); return c; }));
     el('repos').replaceChildren(...latest.repositories.map(profileCard)); el('profile-summary').replaceChildren(...latest.repositories.map(profileCard));
-    el('recent').replaceChildren(...latest.jobs.slice(0, 5).map(jobCard)); renderJobs();
+    renderJobList(el('recent'), latest.jobs.slice(0, 5)); renderJobs();
     const w = latest.worker, r = w.resources;
     renderGroups(w.groups || {});
     el('worker-status').replaceChildren(node('h2', 'Worker: ' + w.mode), node('p', 'Heartbeat: ' + date(w.heartbeat)),
@@ -238,18 +272,52 @@ async function discover(page = 1) {
   if (page === 1) discovered = [];
   discovered.push(...result.repositories.map(r => ({...r, provider: el('discovery-provider').value})));
   discoveryNext = result.next_page; el('discovery-more').hidden = !discoveryNext;
-  el('discovery-results').replaceChildren(...discovered.map((r, index) => {
-    const row = node('article', '', 'card'); field(row, r.full_name + (r.private ? ' · privat' : ''), false, 'discovered', {type: 'checkbox'});
-    row.querySelector('input').dataset.index = index; row.append(node('small', r.clone_url)); return row;
-  }));
+  renderDiscovery();
   message(discovered.length + ' Repositories geladen.');
+}
+function repositoryKey(url) {
+  try { const parsed = new URL(url); return parsed.hostname.toLowerCase() + ':' + (parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '22')) + parsed.pathname.replace(/\/$/, '').replace(/\.git$/, ''); }
+  catch { return ''; }
+}
+function discoveryDrafts(repo) {
+  const keys = new Set([repo.clone_url, repo.ssh_url].map(repositoryKey).filter(Boolean));
+  return [...el('editors').children].filter(card =>
+    !(repo.syncs || []).some(sync => sync.profile === card.querySelector('.repo-name').value) &&
+    [...card.querySelectorAll('.remote-url')].some(input => keys.has(repositoryKey(input.value))))
+    .map(card => card.querySelector('.repo-name').value || 'Neuer Entwurf');
+}
+function renderDiscovery() {
+  const selected = new Set([...el('discovery-results').querySelectorAll('input:checked')].map(input => input.dataset.index));
+  el('discovery-results').replaceChildren(...discovered.map((repo, index) => {
+    const row = node('article', '', 'card'), syncs = repo.syncs || [], drafts = discoveryDrafts(repo);
+    const assigned = syncs.length > 0 || drafts.length > 0;
+    const checkbox = field(row, repo.full_name + (repo.private ? ' · privat' : ''), !assigned && selected.has(String(index)), 'discovered', {type: 'checkbox', disabled: assigned});
+    checkbox.dataset.index = index; row.append(node('small', repo.clone_url));
+    row.append(node('p', syncs.length ? 'Sync vorhanden' : drafts.length ? 'Bereits im Profil-Editor zugeordnet' : 'Noch keinem Sync zugeordnet', 'discovery-state'));
+    for (const sync of syncs) {
+      const summary = node('div', '', 'mapping-summary');
+      const role = sync.direction === 'one-way' ? (sync.matched_remote === sync.source ? 'Quelle' : 'Ziel') : 'Teilnehmer';
+      summary.append(node('strong', sync.profile + ' · ' + (sync.enabled ? 'Aktiv' : 'Deaktiviert') + ' · ' + role));
+      const urls = Object.entries(sync.remotes);
+      if (sync.direction === 'one-way') {
+        summary.append(node('p', 'Einweg: ' + sync.source + ': ' + sync.remotes[sync.source]));
+        for (const [name, url] of urls.filter(([name]) => name !== sync.source)) summary.append(node('p', '→ ' + name + ': ' + url));
+      } else summary.append(node('p', 'Bidirektional: ' + urls.map(([name, url]) => name + ': ' + url).join(' ↔ ')));
+      if (sync.shared_profile) summary.append(node('small', 'Gemeinsames Profil: ' + sync.shared_profile));
+      summary.append(button('Profil anzeigen', () => { navigate('profiles'); })); row.append(summary);
+    }
+    if (drafts.length) row.append(node('p', 'Im Editor: ' + drafts.join(', ') + '. Vor erneutem Import dort pruefen.'));
+    return row;
+  }));
 }
 function importDiscovery() {
   const target = providers.find(p => p.id === el('discovery-target').value), namespace = el('discovery-namespace').value.trim();
   if (!target || !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(namespace) || namespace.split('/').some(p => p === '.' || p === '..')) throw new Error('Ziel-Provider und gültigen Namespace angeben.');
   let count = 0;
   for (const checkbox of el('discovery-results').querySelectorAll('input:checked')) {
-    const repo = discovered[Number(checkbox.dataset.index)], leaf = repo.full_name.split('/').at(-1);
+    const candidate = discovered[Number(checkbox.dataset.index)];
+    if (candidate.syncs?.length || discoveryDrafts(candidate).length) continue;
+    const repo = candidate, leaf = repo.full_name.split('/').at(-1);
     const base = ('sync-' + repo.full_name.replace(/[^A-Za-z0-9_-]/g, '-')).slice(0, 70);
     let name = base, suffix = 1;
     const used = [...document.querySelectorAll('.repo-name')].map(x => x.value);
@@ -307,6 +375,18 @@ el('user-form').addEventListener('submit', async e => {
   } catch (error) { el('user-password').value = ''; showError(error); }
 });
 document.querySelectorAll('[data-worker]').forEach(b => b.addEventListener('click', () => request('/api/worker', 'POST', {action: b.dataset.worker}).then(refresh).catch(showError)));
+async function manageLogs(action, body) {
+  const result = await request('/api/jobs/' + action, 'POST', body);
+  if (action === 'delete' && body.id) for (const key of openedJobDetails) { if (key.endsWith(':' + body.id)) openedJobDetails.delete(key); }
+  message(result.changed + (action === 'delete' ? ' Protokolle geloescht.' : ' Fehler-/Konfliktanzeigen zurueckgesetzt.'));
+  await refresh();
+}
+el('logs-delete').addEventListener('click', async () => {
+  if (!latest) return;
+  const before = latest.snapshot_time;
+  try { if (confirm('Alle abgeschlossenen Protokolle dieses Zeitstands endgueltig loeschen? Laufende und wartende Jobs bleiben erhalten.')) await manageLogs('delete', {before}); } catch (error) { showError(error); }
+});
+el('logs-reset').addEventListener('click', () => { if (latest) manageLogs('reset', {before: latest.snapshot_time}).catch(showError); });
 el('job-filter').addEventListener('change', renderJobs);
 el('discovery-form').addEventListener('submit', e => { e.preventDefault(); discover().catch(showError); });
 el('discovery-more').addEventListener('click', () => discover(discoveryNext).catch(showError));
@@ -405,7 +485,7 @@ function renderPreview(result) {
   if (result.plan_truncated) root.append(node('p', 'Anzeige auf 200 Updates begrenzt.'));
 }
 
-const sharedFields = {enabled: 'enabled', direction: 'direction', source: 'source', policy: 'policy', branches: 'branches', tags: 'tags', interval: 'interval', worker_set: 'worker-set', force_confirmed: 'force', create_missing: 'create', create_private: 'create-private', auto_webhooks: 'hooks', webhook_secret_env: 'secret'};
+const sharedFields = {...Object.fromEntries(Object.keys(syncOptions).map(key => [key, key])), enabled: 'enabled', direction: 'direction', source: 'source', policy: 'policy', branches: 'branches', tags: 'tags', interval: 'interval', worker_set: 'worker-set', force_confirmed: 'force', create_missing: 'create', create_private: 'create-private', auto_webhooks: 'hooks', webhook_secret_env: 'secret', releases: 'releases', release_assets: 'release-assets', release_max_asset_mb: 'release-max'};
 function applySharedRules(card) {
   const rules = configuration?.profiles?.[card.querySelector('.repo-shared').value] || {};
   for (const [key, cls] of Object.entries(sharedFields)) {
@@ -432,6 +512,8 @@ function renderGroups(states = latest?.worker?.groups || {}) {
       el('shared-source').value = profile.source || ''; el('shared-policy').value = profile.policy || 'ff-only';
       el('shared-branches').value = (profile.branches || []).join(', '); el('shared-interval').value = profile.interval ?? configuration.interval;
       el('shared-worker').value = profile.worker_set || 'default'; el('shared-enabled').checked = profile.enabled !== false;
+      el('shared-releases').checked = !!profile.releases; el('shared-release-assets').checked = profile.release_assets !== false; el('shared-release-max').value = profile.release_max_asset_mb ?? 512;
+      for (const key of Object.keys(syncOptions)) el('shared-' + key).checked = profile[key] ?? key === 'sync_branches';
       el('shared-tags').checked = profile.tags !== false; el('shared-force').checked = !!profile.force_confirmed;
     }), button('Entfernen', async () => {
       if (!confirm('Gemeinsames Profil ' + name + ' entfernen? Zuerst alle Zuordnungen loesen.')) return;
@@ -460,7 +542,9 @@ el('shared-form').addEventListener('submit', async e => {
     const name = el('shared-name').value.trim();
     const profile = {direction: el('shared-direction').value, source: el('shared-source').value.trim(), policy: el('shared-policy').value,
       branches: el('shared-branches').value.split(',').map(x => x.trim()).filter(Boolean), interval: Number(el('shared-interval').value),
+      releases: el('shared-releases').checked, release_assets: el('shared-release-assets').checked, release_max_asset_mb: Number(el('shared-release-max').value),
       worker_set: el('shared-worker').value.trim(), enabled: el('shared-enabled').checked, tags: el('shared-tags').checked, force_confirmed: el('shared-force').checked};
+    for (const key of Object.keys(syncOptions)) profile[key] = el('shared-' + key).checked;
     await saveAdminConfig(c => { c.profiles ||= {}; c.profiles[name] = {...c.profiles[name], ...profile}; });
   } catch (error) { showError(error); }
 });

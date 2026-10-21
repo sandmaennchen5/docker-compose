@@ -120,6 +120,9 @@ async function main() {
     await profile.locator('.repo-branches').fill('main, release/*');
     await profile.locator('.repo-interval').fill('0');
     await profile.locator('.repo-tags').uncheck();
+    assert.equal(await profile.getByText('Was synchronisieren?', {exact: true}).count(), 1);
+    await profile.locator('.repo-sync_branches').uncheck();
+    for (const key of ['issues', 'comments', 'labels', 'milestones', 'pull_requests', 'wiki', 'lfs', 'repository_details']) await profile.locator('.repo-' + key).check();
     assert.equal(await profile.locator('.repo-create').isChecked(), false);
     await profile.locator('.repo-create').check();
     assert.equal(await profile.locator('.repo-create-private').isChecked(), true);
@@ -128,10 +131,86 @@ async function main() {
     const settings = await api('/api/settings');
     assert.deepEqual(settings.repositories[0].branches, ['main', 'release/*']);
     assert.equal(settings.repositories[0].interval, 0);
+    assert.equal(settings.repositories[0].sync_branches, false);
+    for (const key of ['issues', 'comments', 'labels', 'milestones', 'pull_requests', 'wiki', 'lfs', 'repository_details']) assert.equal(settings.repositories[0][key], true);
     assert.equal(settings.repositories[0].create_missing, true);
     assert.equal(settings.repositories[0].create_private, true);
     assert.equal(settings.repositories[0].remote_providers.target, target.id);
     assert.equal(settings.repositories[0].remotes.target, 'https://target.example.invalid/mirror/project.git');
+    // Open logs must survive the real five-second poll and changed job details.
+    let logVersion = 1, statusSequence = 0;
+    await page.route('**/api/status', async route => {
+      const response = await route.fetch(), data = await response.json();
+      data.testSequence = ++statusSequence;
+      data.jobs.unshift({id: 900001, profile: settings.repositories[0].name, status: 'success', requested: 1, origin: 'fixture', attempts: 1, details: {message: 'Log version ' + logVersion}});
+      await route.fulfill({response, json: data});
+    });
+    await page.evaluate(() => refresh());
+    await page.locator('[data-page=jobs]').click();
+    const log = page.locator('#jobs article[data-job-id="900001"] details');
+    await log.locator('summary').click();
+    assert.equal(await log.evaluate(node => node.open), true);
+    const previousLog = await log.elementHandle();
+    const previousSequence = await page.evaluate(() => latest.testSequence);
+    await page.waitForFunction(sequence => latest.testSequence > sequence, previousSequence);
+    assert.equal(await log.evaluate(node => node.open), true, 'Automatic refresh must keep logs open');
+    assert.equal(await log.evaluate((node, previous) => node === previous, previousLog), true, 'Unchanged logs must retain their DOM node');
+    logVersion = 2; await page.evaluate(() => refresh());
+    await log.locator('pre').filter({hasText: 'Log version 2'}).waitFor();
+    assert.equal(await log.evaluate(node => node.open), true, 'Changed details must also keep logs open');
+    await page.locator('#job-filter').selectOption('error');
+    await page.locator('#job-filter').selectOption('');
+    assert.equal(await log.evaluate(node => node.open), true, 'Filtering must preserve expanded state');
+    await page.unroute('**/api/status');
+    // Log actions use real backend records, including protected live jobs.
+    const seedLogs = spawn(process.env.GITMESH_PYTHON || 'python', ['-c',
+      "import sqlite3,sys,time,json; db=sqlite3.connect(sys.argv[1]); now=time.time(); rows=[('log-error','error'),('log-conflict','conflict'),('log-success','success'),('log-active','running'),('log-waiting','queued')]; db.executemany(\"INSERT INTO jobs(profile,origin,status,requested,started,finished,details) VALUES(?,'browser-fixture',?,?,?,?,'{\\\"message\\\":\\\"original diagnosis\\\"}')\",[(p,s,now,now,None if s in ('running','queued') else now) for p,s in rows]); db.commit(); db.close()",
+      path.join(data, 'history.db')], {windowsHide: true, stdio: ['ignore', 'ignore', 'pipe']});
+    let seedErrors = ''; seedLogs.stderr.on('data', c => { seedErrors += c; });
+    assert.equal((await once(seedLogs, 'exit'))[0], 0, seedErrors);
+    await page.evaluate(() => refresh());
+    const fixtureJobs = (await api('/api/jobs')).jobs;
+    const failedLog = fixtureJobs.find(j => j.profile === 'log-error');
+    const runningLog = fixtureJobs.find(j => j.profile === 'log-active');
+    const failedCard = page.locator('#jobs article[data-job-id="' + failedLog.id + '"]');
+    await failedCard.getByRole('button', {name: 'Anzeige zuruecksetzen', exact: true}).click();
+    await failedCard.locator('.badge').filter({hasText: 'Zurueckgesetzt (error)'}).waitFor();
+    assert.equal((await api('/api/jobs')).jobs.find(j => j.id === failedLog.id).status, 'error');
+    await page.locator('#logs-reset').click();
+    await page.getByRole('status').filter({hasText: '1 Fehler-/Konfliktanzeigen zurueckgesetzt.'}).waitFor();
+    await page.locator('#job-filter').selectOption('reset');
+    await page.waitForFunction(() => document.querySelectorAll('#jobs article').length === 2);
+    assert.equal(await page.locator('#jobs article').count(), 2);
+    page.once('dialog', dialog => dialog.accept());
+    await failedCard.getByRole('button', {name: 'Protokoll loeschen', exact: true}).click();
+    await failedCard.waitFor({state: 'detached'});
+    assert.equal((await api('/api/jobs')).jobs.some(j => j.id === failedLog.id), false);
+    await page.locator('#job-filter').selectOption('');
+    assert.equal(await page.locator('#jobs article[data-job-id="' + runningLog.id + '"]').getByRole('button', {name: 'Protokoll loeschen'}).count(), 0);
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#logs-delete').click();
+    await page.waitForFunction(() => latest.jobs.every(j => ['running', 'queued'].includes(j.status)));
+    assert.ok((await api('/api/jobs')).jobs.some(j => j.id === runningLog.id));
+    // Discovery shows saved directions and disallows another import of the same repository.
+    await page.unroute('**/api/discover?*');
+    let discoveredAsTarget = false, bidirectional = false;
+    await page.route('**/api/discover?*', route => route.fulfill({json: {repositories: [{full_name: discoveredAsTarget ? 'mirror/project' : 'team/project',
+      clone_url: discoveredAsTarget ? settings.repositories[0].remotes.target : settings.repositories[0].remotes.source,
+      syncs: [{profile: settings.repositories[0].name, enabled: false, direction: bidirectional ? 'bidirectional' : 'one-way', source: 'source',
+        remotes: settings.repositories[0].remotes, matched_remote: discoveredAsTarget ? 'target' : 'source'}]}]}}));
+    await page.locator('[data-page=discovery]').click();
+    await page.locator('#discovery-form button').click();
+    await page.locator('.discovery-state').filter({hasText: 'Sync vorhanden'}).waitFor();
+    assert.equal(await page.locator('#discovery-results input').isDisabled(), true);
+    assert.ok((await page.locator('.mapping-summary').textContent()).includes('Deaktiviert · Quelle'));
+    assert.ok((await page.locator('.mapping-summary').textContent()).includes(settings.repositories[0].remotes.target));
+    discoveredAsTarget = true;
+    await page.locator('#discovery-provider').selectOption(target.id);
+    await page.locator('#discovery-form button').click();
+    await page.locator('.mapping-summary strong').filter({hasText: 'Deaktiviert · Ziel'}).waitFor();
+    bidirectional = true;
+    await page.locator('#discovery-form button').click();
+    await page.locator('.mapping-summary p').filter({hasText: 'Bidirektional:'}).waitFor();
     await page.locator('[data-page=worker]').click();
     await page.locator('[data-worker=pause]').click();
     await page.locator('#worker-status h2').filter({hasText: 'paused'}).waitFor();
@@ -166,15 +245,21 @@ async function main() {
     await page.locator('#shared-interval').fill('0');
     await page.locator('#shared-worker').fill('team');
     await page.locator('#shared-enabled').uncheck();
+    await page.locator('#shared-releases').check();
+    await page.locator('#shared-release-max').fill('64');
     await page.locator('#shared-form button').first().click();
     await page.locator('#shared-list h2').filter({hasText: /^shared-test$/}).waitFor();
     await page.locator('[data-page=profiles]').click();
     await profile.locator('.repo-shared').selectOption('shared-test');
     assert.equal(await profile.locator('.repo-branches').isDisabled(), true);
+    assert.equal(await profile.locator('.repo-releases').isChecked(), true);
+    assert.equal(await profile.locator('.repo-releases').isDisabled(), true);
+    assert.equal(await profile.locator('.repo-release-max').inputValue(), '64');
     const sharedSaved = page.waitForResponse(r => r.url().endsWith('/api/settings') && r.request().method() === 'POST');
     await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
     assert.equal((await sharedSaved).status(), 200);
     assert.equal((await api('/api/settings')).repositories[0].profile, 'shared-test');
+    assert.equal((await api('/api/settings')).profiles['shared-test'].releases, true);
     await page.locator('[data-page=providers]').click();
     await page.locator('#transport-provider').selectOption(target.id);
     await page.locator('#transport-load').click();

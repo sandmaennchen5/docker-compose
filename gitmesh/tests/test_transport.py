@@ -78,6 +78,14 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['env']['GITMESH_GIT_TOKEN'], 'git-transport-test-secret')
         self.assertIn('http.followRedirects=false', run.call_args.args[0])
 
+    def test_default_branch_lookup_receives_token_through_askpass(self):
+        mesh.GIT_CONTEXT.credentials = {'origin': ('alice', 'isolated-default-token')}
+        self.addCleanup(setattr, mesh.GIT_CONTEXT, 'credentials', {})
+        with patch.object(mesh.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'ref: refs/heads/main\tHEAD\n', '')) as run:
+            mesh.git(Path(self.temp.name), 'ls-remote', '--symref', 'origin', 'HEAD')
+        self.assertEqual(run.call_args.kwargs['env']['GITMESH_GIT_TOKEN'], 'isolated-default-token')
+        self.assertNotIn('isolated-default-token', str(run.call_args.args))
+
     def test_askpass_distinguishes_username_in_password_prompt(self):
         helper = Path(__file__).parents[1] / 'askpass.py'
         env = dict(os.environ, GITMESH_GIT_USERNAME='username', GITMESH_GIT_TOKEN='test-password')

@@ -115,7 +115,7 @@ Optional: `GITMESH_TEST_GIT` setzt die Git-Binärdatei für Tests; `GITMESH_PLAY
 
 ## Grenzen
 
-Keine automatische Anlage von Organisationen/Gruppen, keine OAuth-/SSO-Anmeldung und keine ueber mehrere Hosts verteilten Worker. Keine Issues, Pull Requests, Releases, Wikis, Git Notes, speziellen Forge-Refs oder Git-LFS-Objekte. Submodule übertragen nur Git-Verweise; ihre Repositories benötigen eigene Profile. Einweg-Sync ist keine vollständige Mirror-Löschung.
+Keine automatische Anlage von Organisationen/Gruppen, keine OAuth-/SSO-Anmeldung und keine ueber mehrere Hosts verteilten Worker. Git Notes und spezielle Forge-Refs werden nicht uebertragen. Fuer Issues, eingeschraenkte PRs, Wiki und LFS siehe die Auswahl pro Sync unten. Submodule übertragen nur Git-Verweise; ihre Repositories benötigen eigene Profile. Einweg-Sync ist keine vollständige Mirror-Löschung.
 
 
 ## Fehlende Ziel-Repositories automatisch anlegen
@@ -186,3 +186,69 @@ Auf dem Standardbranch wird die Datei durch `github-actions[bot]` mit `[skip ci]
 Im Providerformular **Internes HTTP erlauben** aktivieren und die direkte Basisadresse speichern, beispielsweise `http://172.30.10.20:40501`. Ein vorhandenes Token bei einem Host-/Protokollwechsel erneut eingeben. Die Option ist pro Provider gespeichert und standardmaessig deaktiviert. HTTP uebertraegt Tokens und Git-Daten unverschluesselt; nur in einem vertrauenswuerdigen internen Netz einsetzen.
 
 Im Repository-Netz fuer `target` die direkte Git-URL `http://172.30.10.20:40501/BESITZER/REPOSITORY.git` eintragen und diesem Remote den internen Provider zuordnen. Unter Transport `auto` oder `Internes HTTP` auswaehlen. API und Git pruefen Protokoll, Host und Port; ein HTTPS-Provider gibt sein Token nicht an einen HTTP-Remote weiter. Automatische Repository-Anlage funktioniert ebenfalls mit dieser Freigabe. Die Docker-Dienste muessen die interne Adresse erreichen koennen. Liefert Forgejo bei Discovery weiterhin oeffentliche Clone-URLs aus seiner ROOT_URL, die interne Git-URL manuell im Netz eintragen.
+
+
+## Default-Branch bei der ersten Synchronisierung
+
+GitMesh aendert keine Default-Branch-Einstellung per Provider-API. Bei einem Ziel ohne Branches wird der ueber Git-HEAD ermittelte Default-Branch der Quelle zuerst gepusht, sofern der Branch-Filter ihn einschliesst. Dadurch wird die automatische Auswahl des ersten Branches auf dem Ziel nicht mehr durch die alphabetische Reihenfolge (z. B. beta vor main) bestimmt. Im bidirektionalen Modus dient der eingestellte Start-Remote, sonst der erste befuellte Remote als Bezug. Bereits befuellte Ziele behalten ihren bestehenden Standardbranch. Ein frueher automatisch ausgewaehlter Standardbranch muss einmal in den Repository-Einstellungen des Zielservers korrigiert werden. Unterschiedliche Branch-Namen werden weiterhin nicht aufeinander abgebildet.
+
+
+## Releases und Anhaenge synchronisieren
+
+Unter **Sync-Profile** oder im gemeinsamen Profil **Releases von Quelle zu Zielen synchronisieren** aktivieren. Den Quell-/Start-Remote festlegen, Tags aktivieren und jedem Remote einen Provider mit API-Token zuordnen. Auch bei bidirektionalem Git-Sync werden Releases ausschliesslich von dieser Quelle zu den anderen Remotes kopiert. Standardmaessig ist Release-Sync deaktiviert.
+
+Nach erfolgreichen Git-Pushes gleicht GitMesh Releases anhand ihres Tags ab: Titel, Beschreibung sowie Draft-/Prerelease-Status bei GitHub und Forgejo/Gitea. Das Ziel muss denselben Tag-Objektstand besitzen; fehlende oder abweichende Tags werden protokolliert und uebersprungen. Release-Entwuerfe werden nicht nach GitLab uebertragen, da dort kein Draft-Status existiert. Ein nicht darstellbarer Prerelease-Status wird als Hinweis protokolliert. Es werden keine Releases oder Tags geloescht. Quellcodearchive, die der Server automatisch aus Tags erzeugt, brauchen keine Anhang-Kopie.
+
+**Release-Anhaenge mitkopieren** uebertraegt hochgeladene Binaerdateien. Das Limit je Datei ist einstellbar: standardmaessig 512 MB, maximal 4096 MB. Server- und Proxy-Limits gelten zusaetzlich. Downloads und Multipart-Uploads werden in temporaeren Dateien verarbeitet, nicht vollstaendig im Python-Arbeitsspeicher. Es muss ausreichend Platz fuer Download und Upload vorhanden sein. GitLab speichert Dateien als Projekt-Uploads mit Release-Links; GitHub und Forgejo als Release-Anhaenge.
+
+GitMesh merkt sich selbst erstellte Zielanhaenge, erkennt unveraenderte Dateien und aktualisiert eigene Kopien. Gleichnamige bereits vorhandene, nicht von GitMesh verwaltete Anhaenge werden als Konflikt gemeldet und bleiben erhalten. Bei einer Aktualisierung auf GitHub/Forgejo wird zuerst eine temporaere neue Kopie hochgeladen; erst danach wird die alte eigene Datei ersetzt. Schlaegt ein spaeterer Schritt fehl, kann die neue Datei noch unter einem temporaeren Namen sichtbar sein. Aus der Quelle entfernte Anhaenge werden am Ziel nicht automatisch geloescht.
+
+Download-Zugangsdaten bleiben beim Quellprovider. GitHub-Weiterleitungen zu seinen bekannten Download-CDNs werden ohne Token verfolgt. Fremde Download-Hosts, nicht freigegebenes HTTP und externe GitLab-Asset-Links werden nicht automatisch heruntergeladen. Private objektbasierte Speicher mit anderen Download-Domains werden derzeit nicht unterstuetzt. Release- und Anhang-Ergebnisse, Warnungen und Fehler stehen im Job unter `releases`. Ein Release-Fehler kann auftreten, nachdem Git-Branches/Tags bereits erfolgreich uebertragen wurden; der naechste Lauf gleicht den erreichten Stand erneut ab. Die Sync-Vorschau zeigt weiterhin Git-Referenzupdates, keine vollstaendige Release-/Anhang-Vorschau.
+
+
+Bei aktivierter automatischer Webhook-Einrichtung werden fuer Release-Profile auch Release-Ereignisse abonniert. Bestehende Hooks einmal unter Repository-Werkzeuge manuell aktualisieren, damit diese Ereignisse zusaetzlich zu Push-Ereignissen aktiv werden. Ohne Release-Webhook greift weiterhin das konfigurierte Sync-Intervall.
+
+
+## Protokolldetails und bestehende Discovery-Zuordnungen
+
+Geoeffnete Job-Protokolle bleiben bei der automatischen Fuenf-Sekunden-Aktualisierung offen. Unveraenderte Job-Karten werden wiederverwendet; auch bei neuen Jobdetails sowie beim Wechsel des Statusfilters bleibt der aufgeklappte Zustand erhalten. Beim Abmelden wird dieser Sitzungszustand geloescht.
+
+Discovery zeigt zu bereits gespeicherten Repository-Zuordnungen Profilname, Aktivstatus, Quelle, Ziele und Einweg-/bidirektionale Richtung an. Gemeinsame Profilregeln werden dabei aufgeloest. Das gerade gefundene Repository wird als Quelle, Ziel oder bidirektionaler Teilnehmer gekennzeichnet. Gespeicherte Zuordnungen und bereits im Editor vorhandene Entwuerfe koennen nicht erneut importiert werden. Nach Aenderungen gespeicherter Zuordnungen die Repository-Liste neu laden, um die Erkennung zu aktualisieren. Erkannt werden konfigurierte Adressen desselben Providers; unterschiedliche DNS-Aliase oder interne und externe Hosts werden nicht automatisch gleichgesetzt.
+
+
+## Was synchronisieren? (pro Sync)
+
+Jede Repository-Zuordnung besitzt unter **Sync-Profile** den Bereich **Was synchronisieren?**. Die Auswahl wird mit dem Profil gespeichert und in der Statusuebersicht sowie im Job-Protokoll angezeigt. Gemeinsame Profile koennen diese Auswahl fuer ihre Zuordnungen vorgeben; fuer eine abweichende Auswahl **Eigene Regeln** verwenden. Bestehende Konfigurationen behalten Branches und Tags; neue Bereiche sind standardmaessig aus.
+
+| Auswahl | Verhalten |
+| --- | --- |
+| Branches | Git-Branches gemaess Richtung, Branch-Filter und Konfliktregel. Separat abschaltbar. |
+| Tags | Git-Tags gemaess Richtung und Konfliktregel. |
+| Releases / Release-Anhaenge | Wie im Release-Abschnitt beschrieben; Tags und feste Quelle erforderlich. |
+| Labels | Name, Farbe und Beschreibung. Vorhandene fremde Labels werden nur referenziert und als Konflikt gemeldet, nicht umdefiniert. |
+| Meilensteine | Titel, Beschreibung, Termin und Offen/Geschlossen-Status; vorhandene fremde Meilensteine werden nur referenziert. |
+| Issues | Titel, Beschreibung, Offen/Geschlossen-Status; Labels und Meilenstein-Zuordnung nur bei aktivierter entsprechender Auswahl. |
+| Kommentare | Allgemeine Kommentare zu ausgewaehlten Issues/PRs; Aenderungen werden aktualisiert. Keine Review-Diffkommentare, Systemnotizen oder internen Kommentare. |
+| Pull Requests / Merge Requests | Neue offene PRs, wenn Head-Commit und beide Branches im Ziel vorhanden sind. Bestehende zugeordnete PRs werden aktualisiert/geschlossen; niemals automatisch gemergt. |
+| Wiki | Separates `.wiki.git` von Quelle zu Zielen, nur Fast-forward. Wiki muss auf jedem Provider eingeschaltet und als Git-Repository verfuegbar sein; ein leeres Wiki gegebenenfalls einmal dort initialisieren. |
+| Git LFS | Objekte fuer ausgewaehlte Branches/Tags inklusive erreichbarer Historie vor dem Git-Push uebertragen. Branch-Filter werden beachtet. `git-lfs` wird im Docker-Image installiert und im Versionsbericht erfasst. |
+| Repository-Beschreibung / Website / Themen | Beschreibung, zusaetzlich Website bei GitHub und Forgejo. Themen/Topics werden ebenfalls abgeglichen. Keine Sichtbarkeit, Berechtigungen, Default-Branches oder Schutzregeln. |
+
+Labels, Meilensteine, Issues, Kommentare, PRs und Repository-Details laufen **immer von Quell-/Start-Remote zu allen Zielen**, auch bei bidirektionalem Git. Dafuer benoetigt jedes Remote eine passende Provider-Zuordnung mit API-Rechten und das Profil eine feste Quelle. Kommentare benoetigen Issues oder PRs. Metadaten werden nach den Git-Pushes verarbeitet; die Vorschau plant weiterhin nur Git-Referenzen und nennt die ausgewaehlten Zusatzbereiche.
+
+GitMesh speichert Objektzuordnungen in SQLite, gebunden an Profil, Provider, URLs und Repository-IDs. Quell-Links und urspruengliche Autoren stehen im kopierten Text; geschrieben wird als Token-Benutzer. Zielnummern koennen abweichen. HTML-Markierungen erlauben die Wiedererkennung von Issues/PRs/Kommentaren nach einer Unterbrechung zwischen API-Anlage und Speicherung. Keine automatischen Loeschungen. Eigene Ziel-Issues/Kommentare bleiben unberuehrt; zugeordnete Objekte werden von der Quelle verwaltet. Quell-Aenderungen koennen deren lokale Texte/Zuweisungen ersetzen. Ein geloeschtes zugeordnetes Ziel wird als Konflikt gemeldet.
+
+PR-Grenzen: fehlende oder abweichende Fork-Heads werden protokolliert und uebersprungen, nicht automatisch importiert. Bereits geschlossene/gemergte PRs werden nicht nachtraeglich neu angelegt. Wird ein bereits kopierter PR in der Quelle gemergt, wird sein Ziel nur geschlossen und die Einschraenkung protokolliert. Keine Uebertragung von Reviews, Freigaben, CI-Status, originalen Autorenkonten oder Merge-Historie. Drafts werden bei GitHub als Draft angelegt, bei GitLab/Forgejo durch einen Draft-/WIP-Titel gekennzeichnet; spaetere Draft-Statuswechsel werden nicht vollstaendig abgebildet. Vertrauliche GitLab-Issues werden nur nach GitLab mit vertraulichem Status kopiert.
+
+Issue-/Kommentar-Anhaenge und eingebettete Bilder werden nicht heruntergeladen: ihre Links bleiben im Text. Releases besitzen die separate Anhang-Uebertragung. API-Listen sind auf 5000 Objekte pro Abfragebereich begrenzt; Ueberschreitung ist ein Fehler statt einer unvollstaendigen Erfolgsmeldung. Protokolle begrenzen die Einzelliste auf 200 Eintraege und enthalten weiterhin Gesamtzaehler. Ein API-Fehler laesst erfolgreiche Git-Updates bestehen und wird im Job gemeldet; weitere Kategorien/Ziele werden soweit moeglich verarbeitet. Fehlgeschlagene Labels/Meilensteine blockieren abhaengige Tickets in diesem Ziel.
+
+Zeitplaene und manuelle Starts gleichen alle ausgewaehlten Bereiche ab. Bei neu registrierten Webhooks werden auf der Quelle zusaetzlich ausgewaehlte Issue-, Kommentar-, PR- und Wiki-Ereignisse abonniert. Bereits vorhandene Hooks ueber **Repository-Werkzeuge → Webhooks registrieren / aktualisieren** einmal aktualisieren. Reine Label-/Meilenstein-Aenderungen werden spaetestens beim naechsten geplanten/manuellen Lauf uebertragen.
+
+
+## Protokolle loeschen und Fehleranzeigen zuruecksetzen
+
+Administratoren koennen unter **Jobs & Protokolle** einzelne abgeschlossene Protokolle oder **alle abgeschlossenen Protokolle** nach Bestaetigung loeschen. Dazu gehoerige alte Run-Protokolle werden ebenfalls entfernt. Laufende und wartende Jobs bleiben erhalten. Sammelaktionen gelten fuer den angezeigten Zeitstand; spaeter abgeschlossene Jobs werden nicht mitgeloescht. Die Sammelloeschung gilt fuer alle abgeschlossenen Eintraege bis zu diesem Zeitstand, unabhaengig vom Statusfilter und der auf 100 Eintraege begrenzten Anzeige.
+
+**Anzeige zuruecksetzen** quittiert einen Fehler/Konflikt einzeln. **Alle Fehler / Konflikte zuruecksetzen** quittiert alle bis zu diesem Zeitstand; auf der Profilkarte geht das auch fuer ein bestimmtes Profil. Quittierte Jobs verlassen den Fehlerzaehler und die roten/gelben Statusanzeigen. Unter **Alle** oder **Zurueckgesetzt** bleiben Originalergebnis, Details sowie Zeitpunkt und Benutzer der Quittierung sichtbar. Die Quittierung bleibt nach einem Neustart erhalten.
+
+Zuruecksetzen startet keinen Sync und aendert keine Repositories. Besteht die Ursache weiterhin, meldet ein neuer Lauf erneut einen Fehler/Konflikt. Erfolgreiche Git-Updates, Provider-Zugangsdaten, Sync-Konfiguration, Zeitplaene und Zuordnungen fuer Releases/Metadaten bleiben von Protokollaktionen unberuehrt. Lesebenutzer koennen diese Aktionen weder im WebIF noch ueber die API ausfuehren.

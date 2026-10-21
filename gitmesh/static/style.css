@@ -3,3 +3,7 @@
 #page-tools pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:38rem;overflow:auto} #tool-inventory .card p{overflow-wrap:anywhere}
 
 textarea{font:inherit;width:100%;max-width:100%;box-sizing:border-box;resize:vertical} #shared-list .card,#group-list .card{overflow-wrap:anywhere}
+
+.mapping-summary{padding:.7rem 0;border-top:1px solid #64748b55;overflow-wrap:anywhere}.discovery-state{font-weight:600}
+
+.sync-components{min-width:0;border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0}.sync-components legend{padding:0 8px;color:var(--accent);font-weight:700}#shared-form .sync-components{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:12px}#shared-form .sync-components h3{grid-column:1/-1;margin:0}

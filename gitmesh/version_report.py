@@ -22,12 +22,12 @@ def command(*args):
 
 def probe():
     packages = {}
-    for name in ('git', 'openssh-client', 'ca-certificates'):
+    for name in ('git', 'git-lfs', 'openssh-client', 'ca-certificates'):
         packages[name] = command('dpkg-query', '-W', '-f=${Version}', name)
     ssh = subprocess.run(['ssh', '-V'], check=True, capture_output=True, text=True, timeout=10)
     os_release = platform.freedesktop_os_release()
     return {'python': platform.python_version(), 'git': command('git', '--version').removeprefix('git version '),
-            'openssh': (ssh.stderr or ssh.stdout).strip(), 'openssl': ssl.OPENSSL_VERSION,
+            'git_lfs': command('git', 'lfs', 'version'), 'openssh': (ssh.stderr or ssh.stdout).strip(), 'openssl': ssl.OPENSSL_VERSION,
             'sqlite': sqlite3.sqlite_version, 'os': os_release.get('PRETTY_NAME', ''),
             'packages': packages, 'python_packages': {name: metadata.version(name) for name in ('cryptography', 'cffi', 'pycparser')}}
 

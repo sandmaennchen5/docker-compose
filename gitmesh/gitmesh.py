@@ -21,6 +21,8 @@ import management
 import inspection
 import runtime
 import transport
+import releases
+import metadata
 import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -77,12 +79,12 @@ def _git(path, *args, check=True):
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, LC_ALL='C')
     env.update(getattr(GIT_CONTEXT, 'ssh_env', {}))
     credentials = getattr(GIT_CONTEXT, 'credentials', {})
-    remote = next((arg for arg in args[1:] if arg in credentials), None) if args[0] in ('fetch', 'push') else None
+    remote = next((arg for arg in args[1:] if arg in credentials), None) if args[0] in ('fetch', 'push', 'ls-remote', 'lfs') else None
     if remote:
         username, token = credentials[remote]
         env.update(GIT_ASKPASS=str(Path(__file__).with_name('askpass.py')), GITMESH_GIT_USERNAME=username,
                    GITMESH_GIT_TOKEN=token)
-    remote_name = next((arg for arg in args[1:] if not arg.startswith('-')), None) if args[0] in ('fetch', 'push') else None
+    remote_name = next((arg for arg in args[1:] if not arg.startswith('-')), None) if args[0] in ('fetch', 'push', 'ls-remote', 'lfs') else None
     try:
         result = subprocess.run(['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never',
                              '-c', 'credential.helper=', '-c', 'http.followRedirects=false',
@@ -98,7 +100,7 @@ def _git(path, *args, check=True):
 
 def git(path, *args, check=True):
     repo = getattr(GIT_CONTEXT, 'repo', None)
-    remote = next((arg for arg in args[1:] if repo and arg in repo['remotes']), None) if args and args[0] in ('fetch', 'push') else None
+    remote = next((arg for arg in args[1:] if repo and arg in repo['remotes']), None) if args and args[0] in ('fetch', 'push', 'ls-remote', 'lfs') else None
     if repo and remote:
         with transport.ssh_environment(control(), repo, remote) as ssh_env:
             GIT_CONTEXT.ssh_env = ssh_env
@@ -140,7 +142,7 @@ def _validate_config(config):
     names = set()
     claimed = set()
     for repo in repos:
-        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'worker_set', 'profile'}:
+        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'worker_set', 'profile', 'releases', 'release_assets', 'release_max_asset_mb', 'sync_branches', *metadata.OPTIONS}:
             raise ValueError('Invalid repository fields')
         name = repo.get('name', '')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', name) or name in names:
@@ -161,6 +163,15 @@ def _validate_config(config):
         branches = repo.get('branches', [])
         if not isinstance(branches, list) or len(branches) > 50 or any(not isinstance(x, str) or not 1 <= len(x) <= 200 for x in branches):
             raise ValueError('Ungültiger Branch-Filter')
+        if type(repo.get('sync_branches', True)) is not bool:
+            raise ValueError('Ungueltige Branch-Auswahl')
+        for option in metadata.OPTIONS:
+            if type(repo.get(option, False)) is not bool:
+                raise ValueError('Ungueltige Sync-Auswahl: ' + option)
+        if repo.get('comments') and not (repo.get('issues') or repo.get('pull_requests')):
+            raise ValueError('Kommentare benoetigen Issues oder Pull Requests')
+        if any(repo.get(key) for key in metadata.OPTIONS if key != 'lfs') and (repo.get('source') not in remotes or any(not repo.get('remote_providers', {}).get(remote) for remote in remotes)):
+            raise ValueError('Metadaten/Wiki benoetigen Quelle und Provider fuer alle Remotes')
         if type(repo.get('tags', True)) is not bool:
             raise ValueError('Ungültige Tag-Einstellung')
         if 'interval' in repo and (type(repo['interval']) is not int or repo['interval'] != 0 and not 30 <= repo['interval'] <= 86400):
@@ -168,9 +179,13 @@ def _validate_config(config):
         providers = repo.get('remote_providers', {})
         if not isinstance(providers, dict) or set(providers) - set(remotes) or any(not isinstance(x, str) for x in providers.values()):
             raise ValueError('Ungültige Provider-Zuordnung')
-        for option in ('create_missing', 'create_private', 'auto_webhooks'):
-            if type(repo.get(option, option == 'create_private')) is not bool:
+        for option in ('create_missing', 'create_private', 'auto_webhooks', 'releases', 'release_assets'):
+            if type(repo.get(option, option in ('create_private', 'release_assets'))) is not bool:
                 raise ValueError('Invalid automatic repository creation setting')
+        if type(repo.get('release_max_asset_mb', 512)) is not int or not 1 <= repo.get('release_max_asset_mb', 512) <= 4096:
+            raise ValueError('Release-Anhanglimit: 1 bis 4096 MB')
+        if repo.get('releases') and (repo.get('source') not in remotes or not repo.get('tags', True) or any(not providers.get(remote) for remote in remotes)):
+            raise ValueError('Release-Sync benoetigt Quelle, aktivierte Tags und Provider fuer alle Remotes')
         if repo.get('auto_webhooks') and (not public or any(not providers.get(remote) for remote in remotes)):
             raise ValueError('Automatic webhooks require public URL and all provider mappings')
         if repo.get('create_missing'):
@@ -203,7 +218,7 @@ def _validate_config(config):
     return config
 
 
-SHARED_FIELDS = {'enabled', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'worker_set', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'webhook_secret_env'}
+SHARED_FIELDS = {'enabled', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'worker_set', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'webhook_secret_env', 'releases', 'release_assets', 'release_max_asset_mb', 'sync_branches', *metadata.OPTIONS}
 
 
 def resolve_config(config):
@@ -344,6 +359,58 @@ def repository_tools():
     return inspection.RepositoryTools(git, fetch_snapshots, DATA, redact_git_output)
 
 
+def prioritize_initial_default(repo, path, snapshots, plan):
+    empty = {remote for remote, refs in snapshots.items() if not any(ref.startswith('heads/') for ref in refs)}
+    if not empty or not any(remote in empty and ref.startswith('heads/') for remote, ref, _, _ in plan):
+        return plan
+    source = repo.get('source')
+    if source not in snapshots or not any(ref.startswith('heads/') for ref in snapshots[source]):
+        source = next((remote for remote in repo['remotes'] if any(ref.startswith('heads/') for ref in snapshots[remote])), None)
+    if not source:
+        return plan
+    advertised = git(path, 'ls-remote', '--symref', source, 'HEAD').stdout
+    default = next((parts[1].removeprefix('refs/') for line in advertised.splitlines()
+                    if len(parts := line.split()) == 3 and parts[0] == 'ref:' and parts[2] == 'HEAD'
+                    and parts[1].startswith('refs/heads/') and parts[1].removeprefix('refs/') in snapshots[source]), None)
+    if not default:
+        return plan
+    # Only reorder initial updates; do not modify server settings or bypass branch filters.
+    return sorted(plan, key=lambda item: 0 if item[0] in empty and item[1] == default else 1)
+
+
+def selected_components(repo):
+    return [key for key in ('sync_branches', 'tags', 'releases', *metadata.OPTIONS) if repo.get(key, key in ('sync_branches', 'tags'))]
+
+
+def sync_lfs(repo, path, snapshots):
+    # Transfer objects before publishing refs; keep filters and unrelated target refs intact.
+    git(path, 'lfs', 'version')
+    sources = [repo['source']] if repo.get('direction') == 'one-way' else list(repo['remotes'])
+    refs = []
+    for remote in sources:
+        selected = [f'refs/mesh/{remote}/{ref}' for ref in snapshots[remote]
+                    if (ref.startswith('heads/') and repo.get('sync_branches', True)
+                        and (not repo.get('branches') or any(fnmatch.fnmatchcase(ref[6:], pattern) for pattern in repo['branches'])))
+                    or (ref.startswith('tags/') and repo.get('tags', True))]
+        if selected:
+            git(path, 'lfs', 'fetch', '--all', remote, *selected)
+            refs.extend(selected)
+    if refs:
+        for remote in repo['remotes']:
+            if repo.get('direction') != 'one-way' or remote != repo['source']:
+                git(path, 'lfs', 'push', '--all', remote, *refs)
+
+
+def sync_wiki(repo):
+    # Nested cache retains the same remote names for existing credential/SSH scoping.
+    wiki = dict(repo, name=repo['name'] + '/wiki.git', direction='one-way', policy='ff-only',
+                sync_branches=True, branches=[], tags=False, releases=False, create_missing=False,
+                auto_webhooks=False, **{key: False for key in metadata.OPTIONS})
+    wiki['remotes'] = {name: url.removesuffix('.git') + '.wiki.git' for name, url in repo['remotes'].items()}
+    status, details = synchronize(wiki)
+    return dict(details, status=status)
+
+
 def synchronize(repo, dry_run=False):
     path, snapshots, created, missing = fetch_snapshots(repo, dry_run)
     actions, conflicts, plan = [], [], []
@@ -351,6 +418,8 @@ def synchronize(repo, dry_run=False):
     source = repo.get('source')
     references = set(snapshots[source]) if direction == 'one-way' else set().union(*(set(s) for s in snapshots.values()))
     for ref in sorted(references):
+        if ref.startswith('heads/') and not repo.get('sync_branches', True):
+            continue
         if ref.startswith('heads/') and repo.get('branches') and not any(fnmatch.fnmatchcase(ref[6:], pattern) for pattern in repo['branches']):
             continue
         if ref.startswith('tags/') and not repo.get('tags', True):
@@ -380,20 +449,44 @@ def synchronize(repo, dry_run=False):
                 conflicts.append(ref + ' @ ' + remote)
                 continue
             plan.append((remote, ref, winner, old))
+    plan = prioritize_initial_default(repo, path, snapshots, plan)
     if dry_run:
-        return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing}
+        return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing, 'selected_components': selected_components(repo), 'note': 'Vorschau plant Git-Referenzen; Metadaten, Wiki und LFS werden erst beim echten Sync verarbeitet.'}
     hooks = []
     if repo.get('auto_webhooks'):
         hooks = control().register_hooks(repo, load_config().get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''), refresh_secret=False)
     if conflicts and policy == 'reject':
         return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
+    if repo.get('lfs'):
+        sync_lfs(repo, path, snapshots)
     for remote, ref, winner, old in plan:
         args = ['push']
         if policy == 'force-with-lease':
             args.append(f'--force-with-lease=refs/{ref}:{old or ""}')
         git(path, *args, remote, f'{winner}:refs/{ref}')
+        snapshots[remote][ref] = winner
         actions.append(f'{remote}: {ref} -> {winner[:12]}')
-    return ('conflict' if conflicts else 'success'), {'updated': actions, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks}
+    details = {'updated': actions, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks, 'selected_components': selected_components(repo)}
+    if repo.get('lfs'):
+        details['lfs'] = 'success'
+    if any(repo.get(key) for key in metadata.OPTIONS if key not in ('wiki', 'lfs')):
+        details['metadata'] = metadata.MetadataSync(control()).sync(repo, snapshots)
+    if repo.get('wiki'):
+        try:
+            details['wiki'] = sync_wiki(repo)
+        except GitFailure as exc:
+            details['wiki'] = {'status': 'error', **exc.details}
+    if repo.get('releases'):
+        try:
+            details['releases'] = releases.ReleaseSync(control()).sync(repo, snapshots)
+        except (management.ProviderError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            details['releases'] = {'errors': [{'message': str(exc) if isinstance(exc, management.ProviderError) else 'Release-Sync fehlgeschlagen'}]}
+    if details.get('releases', {}).get('errors') or details.get('metadata', {}).get('errors') or details.get('wiki', {}).get('status') == 'error':
+        return 'error', details
+    if (details.get('releases', {}).get('conflicts') or any(asset['status'] == 'conflict' for asset in details.get('releases', {}).get('assets', []))
+            or details.get('metadata', {}).get('counts', {}).get('conflict') or details.get('wiki', {}).get('status') == 'conflict'):
+        return 'conflict', details
+    return ('conflict' if conflicts else 'success'), details
 
 
 def prepare_credentials(repo):
@@ -551,7 +644,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/discover':
             params = parse_qs(urlsplit(self.path).query)
             return self.reply(200, control().discover(params.get('provider', [''])[0],
-                params.get('owner', [''])[0], params.get('scope', ['self'])[0], int(params.get('page', ['1'])[0])))
+                params.get('owner', [''])[0], params.get('scope', ['self'])[0], int(params.get('page', ['1'])[0]), config=load_config()))
         if path in ('/api/status', '/api/jobs'):
             store = control()
             if path == '/api/jobs':
@@ -560,11 +653,11 @@ class Handler(BaseHTTPRequestHandler):
                 rows = db.execute('SELECT time, repository, status, details FROM runs ORDER BY id DESC LIMIT 100').fetchall()
             config = load_config()
             worker = WORKER.status() if WORKER else runtime.status(store)
-            return self.reply(200, {'running': bool(worker['active']), 'actor': actor, 'worker': worker,
+            return self.reply(200, {'running': bool(worker['active']), 'actor': actor, 'worker': worker, 'snapshot_time': time.time(),
                 'repositories': [{'name': r['name'], 'remotes': list(r['remotes']), 'enabled': r.get('enabled', True),
                                   'direction': r.get('direction', 'bidirectional'), 'source': r.get('source'),
                                   'remote_urls': r['remotes'], 'policy': r.get('policy', 'ff-only'),
-                                  'branches': r.get('branches', []), 'tags': r.get('tags', True),
+                                  'branches': r.get('branches', []), 'tags': r.get('tags', True), 'selected_components': selected_components(r),
                                   'interval': r.get('interval', config.get('interval', 300))} for r in config['repositories']],
                 'history': [dict(time=t, repository=r, status=status, details=json.loads(details))
                             for t, r, status, details in rows], 'jobs': store.jobs(), 'schedules': store.schedules()})
@@ -659,6 +752,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 mode = store.group_mode(body['group'], modes[action]) if body.get('group') else store.mode(modes[action])
             return self.reply(200, {'mode': mode})
+        if self.path in ('/api/jobs/delete', '/api/jobs/reset'):
+            return self.reply(200, store.manage_logs(self.path.rsplit('/', 1)[1], body, actor['name']))
         if self.path == '/api/jobs/cancel':
             with store.db() as db:
                 db.execute("UPDATE jobs SET status='cancelled',finished=? WHERE id=? AND status='queued'",

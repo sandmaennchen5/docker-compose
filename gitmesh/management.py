@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -72,6 +73,10 @@ class Control:
               url TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
               token TEXT NOT NULL DEFAULT '', health TEXT NOT NULL DEFAULT 'untested',
               checked REAL);
+            CREATE TABLE IF NOT EXISTS release_assets (
+              profile TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL, tag TEXT NOT NULL,
+              name TEXT NOT NULL, signature TEXT NOT NULL, target_id TEXT NOT NULL, digest TEXT NOT NULL,
+              repository TEXT NOT NULL, PRIMARY KEY(profile,source,target,tag,name));
             CREATE TABLE IF NOT EXISTS provider_http (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS provider_transport (id TEXT PRIMARY KEY, details TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat REAL, details TEXT NOT NULL);
@@ -84,17 +89,31 @@ class Control:
             CREATE TABLE IF NOT EXISTS login_failures (
               address TEXT PRIMARY KEY, count INTEGER NOT NULL, since REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS jobs (
-              id INTEGER PRIMARY KEY, profile TEXT NOT NULL, origin TEXT NOT NULL,
+              id INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, origin TEXT NOT NULL,
               status TEXT NOT NULL, requested REAL NOT NULL, started REAL,
               finished REAL, attempts INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL DEFAULT '{}');
             CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(profile)
               WHERE status IN ('queued','running');
+            CREATE TABLE IF NOT EXISTS job_resets (
+              job_id INTEGER PRIMARY KEY, reset_at REAL NOT NULL, reset_by TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS schedules (
               profile TEXT PRIMARY KEY, signature TEXT NOT NULL, next_run REAL NOT NULL);
             CREATE TABLE IF NOT EXISTS worker_state (id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL);
             INSERT OR IGNORE INTO worker_state VALUES(1,'running');
         """)
         try:
+            # Old databases used reusable row IDs. Keep IDs stable after log deletion.
+            schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
+            if 'AUTOINCREMENT' not in schema.upper():
+                with db:
+                    db.execute('BEGIN IMMEDIATE')
+                    schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
+                    if 'AUTOINCREMENT' not in schema.upper():
+                        db.execute('ALTER TABLE jobs RENAME TO jobs_before_log_actions')
+                        db.execute(schema.replace('id INTEGER PRIMARY KEY,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1))
+                        db.execute('INSERT INTO jobs SELECT * FROM jobs_before_log_actions')
+                        db.execute('DROP TABLE jobs_before_log_actions')
+                        db.execute("CREATE UNIQUE INDEX one_live_job ON jobs(profile) WHERE status IN ('queued','running')")
             with db:
                 yield db
         finally:
@@ -323,10 +342,18 @@ class Control:
             if provider['kind'] == 'gitlab':
                 body = {'url': callback, 'token': secret, 'push_events': True, 'tag_push_events': True,
                         'enable_ssl_verification': True}
+                if repo.get('releases'):
+                    body['release_events'] = True
+                if remote == repo.get('source'):
+                    body.update({key: bool(repo.get(option)) for key, option in [('issues_events', 'issues'), ('note_events', 'comments'), ('merge_requests_events', 'pull_requests'), ('wiki_page_events', 'wiki')]})
                 method = 'PUT' if existing else 'POST'
             else:
-                body = {'active': True, 'events': ['push'], 'config': {'url': callback, 'content_type': 'json',
+                body = {'active': True, 'events': ['push', 'release'] if repo.get('releases') else ['push'], 'config': {'url': callback, 'content_type': 'json',
                         'secret': secret, 'insecure_ssl': '0'}}
+                if remote == repo.get('source'):
+                    for option, event in [('issues', 'issues'), ('comments', 'issue_comment'), ('pull_requests', 'pull_request'), ('wiki', 'gollum' if provider['kind'] == 'github' else 'wiki')]:
+                        if repo.get(option):
+                            body['events'].append(event)
                 if not existing:
                     body.update({'name': 'web'} if provider['kind'] == 'github' else {'type': 'gitea'})
                 method = 'PATCH' if existing else 'POST'
@@ -361,7 +388,22 @@ class Control:
                        (time.time(), login, identifier))
         return {'status': 'ok', 'account': login}
 
-    def discover(self, identifier, owner='', scope='self', page=1):
+    def repository_mappings(self, config, provider):
+        index = {}
+        for repo in config['repositories']:
+            for remote, url in repo['remotes'].items():
+                try:
+                    key = '/'.join(self.repository_path(provider, url))
+                except ValueError:
+                    continue
+                if provider['kind'] == 'github':
+                    key = key.casefold()
+                index.setdefault(key, []).append({'profile': repo['name'], 'shared_profile': repo.get('profile', ''),
+                    'enabled': repo.get('enabled', True), 'direction': repo.get('direction', 'bidirectional'),
+                    'source': repo.get('source', ''), 'remotes': dict(repo['remotes']), 'matched_remote': remote})
+        return index
+
+    def discover(self, identifier, owner='', scope='self', page=1, config=None):
         if scope not in ('self', 'org', 'user') or not isinstance(owner, str) or len(owner) > 200 or not 1 <= page <= 10000:
             raise ValueError('Discovery-Parameter prüfen')
         if scope != 'self' and not owner:
@@ -380,6 +422,7 @@ class Control:
                 query['membership'] = 'true'
         else:
             path = '/user/repos' if scope == 'self' else ('/orgs/' if scope == 'org' else '/users/') + escaped + '/repos'
+        mappings = self.repository_mappings(config, provider) if config is not None else {}
         records = self.api(provider, path, query)
         if not isinstance(records, list):
             raise ProviderError('Ungültige Repository-Liste')
@@ -392,7 +435,14 @@ class Control:
             parsed = urlsplit(clone)
             if parsed.scheme != urlsplit(provider['url']).scheme or parsed.scheme not in (('https', 'http') if provider.get('allow_http') else ('https',)) or parsed.netloc != urlsplit(provider['url']).netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
                 continue
-            repos.append({'full_name': name, 'clone_url': clone,
+            try:
+                key = '/'.join(self.repository_path(provider, clone))
+                if provider['kind'] == 'github':
+                    key = key.casefold()
+                syncs = mappings.get(key, [])
+            except ValueError:
+                syncs = []
+            repos.append({'full_name': name, 'clone_url': clone, 'syncs': syncs,
                           'ssh_url': repo.get('ssh_url') or repo.get('ssh_url_to_repo', ''),
                           'private': bool(repo.get('private', repo.get('visibility') == 'private'))})
         return {'repositories': repos, 'page': page, 'next_page': page + 1 if len(records) == 50 else None}
@@ -490,7 +540,54 @@ class Control:
 
     def jobs(self):
         with self.db() as db:
-            return [dict(r, details=json.loads(r['details'])) for r in db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 100')]
+            return [dict(r, details=json.loads(r['details'])) for r in db.execute('SELECT j.*, r.reset_at, r.reset_by FROM jobs j LEFT JOIN job_resets r ON r.job_id=j.id ORDER BY j.id DESC LIMIT 100')]
+
+    def manage_logs(self, action, body, actor):
+        if action not in ('delete', 'reset') or not isinstance(body, dict) or set(body) - {'id', 'before', 'profile'}:
+            raise ValueError('Ungueltige Protokoll-Aktion')
+        if 'id' in body:
+            if type(body['id']) is not int or body['id'] <= 0 or set(body) != {'id'}:
+                raise ValueError('Positive Job-ID erforderlich')
+            where, parameters = 'id=?', [body['id']]
+        else:
+            before = body.get('before')
+            if type(before) not in (int, float) or not math.isfinite(before) or not 0 < before <= time.time():
+                raise ValueError('Gueltiger Zeitstand fuer Sammelaktion erforderlich')
+            where, parameters = 'finished<=?', [before]
+            if 'profile' in body:
+                if not isinstance(body['profile'], str) or not IDENTIFIER.fullmatch(body['profile']):
+                    raise ValueError('Ungueltiges Profil')
+                where += ' AND profile=?'
+                parameters.append(body['profile'])
+        with self.db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if 'id' in body:
+                job = db.execute('SELECT status FROM jobs WHERE ' + where, parameters).fetchone()
+                if not job:
+                    raise ValueError('Job nicht gefunden')
+                if job['status'] in ('queued', 'running'):
+                    raise ValueError('Laufende oder wartende Jobs sind geschuetzt')
+            if action == 'reset':
+                rows = db.execute("SELECT id FROM jobs WHERE (" + where + ") AND status IN ('error','conflict') AND id NOT IN (SELECT job_id FROM job_resets)", parameters).fetchall()
+                db.executemany('INSERT INTO job_resets VALUES(?,?,?)', [(r['id'], time.time(), actor) for r in rows])
+            else:
+                rows = db.execute("SELECT * FROM jobs WHERE (" + where + ") AND status NOT IN ('queued','running')", parameters).fetchall()
+                # Erase the legacy run log too; a live run must retain its diagnostics.
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone():
+                    if 'id' in body:
+                        for row in rows:
+                            if row['started'] is not None and row['finished'] is not None:
+                                db.execute('DELETE FROM runs WHERE repository=? AND time>=? AND time<=?', (row['profile'], row['started'], row['finished']))
+                    else:
+                        sql = "DELETE FROM runs WHERE time<=? AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.status='running' AND j.profile=runs.repository AND j.started<=runs.time)"
+                        args = [body['before']]
+                        if 'profile' in body:
+                            sql += ' AND repository=?'
+                            args.append(body['profile'])
+                        db.execute(sql, args)
+                db.executemany('DELETE FROM job_resets WHERE job_id=?', [(r['id'],) for r in rows])
+                db.executemany('DELETE FROM jobs WHERE id=?', [(r['id'],) for r in rows])
+        return {'status': action, 'changed': len(rows)}
 
     def group_mode(self, name, value=None):
         if not isinstance(name, str) or not IDENTIFIER.fullmatch(name):

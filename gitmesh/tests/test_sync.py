@@ -59,6 +59,31 @@ class SyncFixture(unittest.TestCase):
 
 
 class SyncTests(SyncFixture):
+    def test_empty_targets_receive_source_default_before_alphabetical_beta(self):
+        self.command(self.work, 'checkout', '-b', 'beta')
+        self.commit('newest push is on beta')
+        self.command(self.work, 'push', self.remotes['github'], 'beta')
+        self.command(self.work, 'checkout', 'main')
+        self.command(Path(self.remotes['github']), 'symbolic-ref', 'HEAD', 'refs/heads/main')
+        pushes = []
+        def runner(path, *args, check=True):
+            if args[0] == 'push':
+                pushes.append((args[-2], args[-1].split(':', 1)[1]))
+            return self.command(path, *args, check=check)
+        with patch.object(mesh, 'git', runner):
+            self.assertEqual(mesh.synchronize(self.repo)[0], 'success')
+        for target in ('gitlab', 'forgejo'):
+            self.assertEqual([ref for remote, ref in pushes if remote == target], ['refs/heads/main', 'refs/heads/beta'])
+
+    def test_existing_target_default_branch_is_preserved(self):
+        mesh.synchronize(self.repo)
+        self.command(self.work, 'branch', 'beta')
+        self.command(self.work, 'push', self.remotes['github'], 'beta')
+        self.command(Path(self.remotes['github']), 'symbolic-ref', 'HEAD', 'refs/heads/main')
+        self.command(Path(self.remotes['forgejo']), 'symbolic-ref', 'HEAD', 'refs/heads/main')
+        mesh.synchronize(self.repo)
+        self.assertEqual(self.command(Path(self.remotes['forgejo']), 'symbolic-ref', 'HEAD').stdout.strip(), 'refs/heads/main')
+
     def test_three_way_sync_and_repeat_are_idempotent(self):
         status, details = mesh.synchronize(self.repo)
         self.assertEqual(status, 'success')
