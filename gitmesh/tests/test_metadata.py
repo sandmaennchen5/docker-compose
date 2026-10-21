@@ -182,6 +182,25 @@ class MetadataTests(unittest.TestCase):
                     self.assertEqual(second['events'], ['push'])
                 self.api.stop()
 
+    def test_bidirectional_comment_hooks_are_registered_on_all_remotes(self):
+        for kind in ('github', 'forgejo', 'gitlab'):
+            with self.subTest(kind=kind):
+                self.setup_api(kind, kind)
+                repo = dict(self.repo, direction='bidirectional')
+                with patch.object(self.store, 'api', side_effect=lambda p, path, query=None, **kw: [] if kw.get('method', 'GET') == 'GET' else {'id': 1}) as api:
+                    self.store.register_hooks(repo, 'https://mesh.example', 'test-secret', refresh_secret=True)
+                posts = [call.kwargs['body'] for call in api.call_args_list if call.kwargs.get('method') == 'POST']
+                self.assertEqual(len(posts), 2)
+                for body in posts:
+                    if kind == 'gitlab':
+                        self.assertTrue(body['note_events'])
+                        self.assertTrue(body['milestone_events'])
+                    else:
+                        self.assertIn('issue_comment', body['events'])
+                        if kind == 'github':
+                            self.assertIn('milestone', body['events'])
+                self.api.stop()
+
     def test_validation_and_shared_options(self):
         mesh.validate_config({'repositories': [self.repo]})
         for changes in ({'source': ''}, {'remote_providers': {}}, {'issues': 'true'}, {'sync_branches': 1}, {'issues': False, 'pull_requests': False}):

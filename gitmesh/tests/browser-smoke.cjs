@@ -103,6 +103,43 @@ async function main() {
     await page.locator('#provider-new').click();
     assert.equal(await page.locator('#provider-id').inputValue(), '', 'New provider must clear the edit ID');
 
+    // Authorship UI filters bot credentials to the same host and provider kind.
+    const botResponse = await fetch(base + '/api/providers', {method: 'POST', headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify({name: 'GitMesh-Bot', kind: source.kind, url: source.url, token: 'fake-bot-credential'})});
+    assert.equal(botResponse.status, 200);
+    const botProvider = (await botResponse.json()).id;
+    const authorSettings = new Map();
+    let authorPayload;
+    await page.route('**/api/authorship*', async route => {
+      const post = route.request().method() === 'POST';
+      const payload = post ? route.request().postDataJSON() : null;
+      const id = post ? payload.id : new URL(route.request().url()).searchParams.get('id');
+      if (post) {
+        authorPayload = payload;
+        authorSettings.set(id, {id, enabled: payload.enabled, bot_provider: payload.enabled ? payload.bot_provider : '', personal_account: 'michael', bot_account: payload.enabled ? 'GitMesh-Bot' : ''});
+      }
+      await route.fulfill({json: authorSettings.get(id) || {id, enabled: false, bot_provider: '', personal_account: '', bot_account: ''}});
+    });
+    await page.evaluate(() => loadProviders());
+    await page.locator('#authorship-provider').selectOption(source.id);
+    await page.locator('#authorship-load').click();
+    await page.waitForFunction(() => document.querySelectorAll('#authorship-bot option').length === 2);
+    assert.equal(await page.locator('#authorship-bot option[value="' + target.id + '"]').count(), 0);
+    await page.locator('#authorship-enabled').check();
+    await page.locator('#authorship-bot').selectOption(botProvider);
+    await page.locator('#authorship-form button').last().click();
+    await page.getByRole('status').filter({hasText: 'eigene Beitraege als michael, fremde als GitMesh-Bot'}).waitFor();
+    await page.waitForFunction(() => activeSave === null);
+    assert.equal(authorPayload.id, source.id);
+    assert.equal(authorPayload.bot_provider, botProvider);
+    assert.equal(authorPayload.enabled, true);
+    await page.locator('#authorship-provider').selectOption(target.id);
+    await page.locator('#authorship-load').click();
+    await page.waitForFunction(() => document.querySelectorAll('#authorship-bot option').length === 1);
+    await page.locator('#authorship-provider').selectOption(source.id);
+    await page.locator('#authorship-load').click();
+    await page.waitForFunction(() => document.getElementById('authorship-enabled').checked);
+    assert.equal(await page.locator('#authorship-bot').inputValue(), botProvider);
+    await page.unroute('**/api/authorship*');
     await page.route('**/api/discover?*', route => route.fulfill({json: {
       repositories: [{full_name: 'team/project', clone_url: 'https://source.example.invalid/team/project.git', private: true}],
       next_page: null, page: 1
@@ -243,29 +280,57 @@ async function main() {
     await page.unroute('**/api/settings');
     await page.locator('[data-page=profiles]').click();
     // Open logs must survive the real five-second poll and changed job details.
-    let logVersion = 1, statusSequence = 0;
+    let logVersion = 1, statusSequence = 0, fixtureResolved = false;
     await page.route('**/api/status', async route => {
       const response = await route.fetch(), data = await response.json();
       data.testSequence = ++statusSequence;
-      data.jobs.unshift({id: 900001, profile: settings.repositories[0].name, status: 'success', requested: 1, origin: 'fixture', attempts: 1, details: {message: 'Log version ' + logVersion}});
+      data.resolved_conflicts = fixtureResolved ? ['browser-label-conflict'] : [];
+      data.jobs.unshift({id: 900001, profile: settings.repositories[0].name, status: 'conflict', requested: 1, origin: 'fixture', attempts: 1, details: {message: 'Log version ' + logVersion, conflicts: [], metadata: {counts: {conflict: 1}, items: [{category: 'labels', status: 'conflict', target: 'Forgejo', item: '77', name: 'bug', reason: 'Gleichnamiges vorhandenes Label hat andere Werte.', values: {GitHub: {color: 'ff0000'}, Forgejo: {color: '000000'}}, resolution_id: 'browser-label-conflict', choices: ['adopt', 'source']}]}}});
       await route.fulfill({response, json: data});
     });
     await page.evaluate(() => refresh());
     await page.locator('[data-page=jobs]').click();
-    const log = page.locator('#jobs article[data-job-id="900001"] details');
+    const log = page.locator('#jobs article[data-job-id="900001"] details.job-raw');
     await log.locator('summary').click();
     assert.equal(await log.evaluate(node => node.open), true);
     const previousLog = await log.elementHandle();
+    await page.locator('[data-page=dashboard]').click();
+    const mapping = page.locator('#repos .profile-mapping').first();
+    await mapping.locator('summary').click();
+    const previousMapping = await mapping.elementHandle();
+    assert.equal(await mapping.evaluate(node => node.open), true);
+    const conflictValues = page.locator('#repos .conflict-values').first();
+    await conflictValues.locator('summary').click();
+    await page.locator('#repos .conflict-entry strong').filter({hasText: 'Labels: bug'}).waitFor();
     const previousSequence = await page.evaluate(() => latest.testSequence);
     await page.waitForFunction(sequence => latest.testSequence > sequence, previousSequence);
     assert.equal(await log.evaluate(node => node.open), true, 'Automatic refresh must keep logs open');
     assert.equal(await log.evaluate((node, previous) => node === previous, previousLog), true, 'Unchanged logs must retain their DOM node');
+    assert.equal(await mapping.evaluate(node => node.open), true, 'Dashboard mapping must survive polling');
+    assert.equal(await mapping.evaluate((node, old) => node === old, previousMapping), true, 'Unchanged dashboard cards retain DOM');
+    assert.equal(await conflictValues.evaluate(node => node.open), true);
     logVersion = 2; await page.evaluate(() => refresh());
+    assert.equal(await mapping.evaluate(node => node.open), true, 'Changed profile job must retain expanded mapping');
+    assert.equal(await conflictValues.evaluate(node => node.open), true, 'Changed job keeps conflict comparison open');
+    await page.locator('[data-page=jobs]').click();
     await log.locator('pre').filter({hasText: 'Log version 2'}).waitFor();
     assert.equal(await log.evaluate(node => node.open), true, 'Changed details must also keep logs open');
     await page.locator('#job-filter').selectOption('error');
     await page.locator('#job-filter').selectOption('');
     assert.equal(await log.evaluate(node => node.open), true, 'Filtering must preserve expanded state');
+    let resolutionPayload;
+    await page.route('**/api/conflicts/resolve', async route => {
+      resolutionPayload = route.request().postDataJSON(); fixtureResolved = true;
+      await route.fulfill({json: {status: 'success'}});
+    });
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#jobs article[data-job-id="900001"]').getByRole('button', {name: 'Vorhandenes Label zuordnen', exact: true}).click();
+    await page.locator('#jobs .resolved-conflict').filter({hasText: 'Aufgeloest'}).waitFor();
+    assert.equal(resolutionPayload.choice, 'adopt');
+    assert.equal(resolutionPayload.profile, settings.repositories[0].name);
+    assert.equal(await page.locator('#jobs article[data-job-id="900001"]').getByRole('button', {name: 'Vorhandenes Label zuordnen', exact: true}).count(), 0);
+    await page.waitForFunction(() => activeSave === null);
+    await page.unroute('**/api/conflicts/resolve');
     await page.unroute('**/api/status');
     // Log actions use real backend records, including protected live jobs.
     const seedLogs = spawn(process.env.GITMESH_PYTHON || 'python', ['-c',
@@ -409,6 +474,7 @@ async function main() {
     assert.equal(await page.locator('[data-page=groups]').isVisible(), false);
     await page.locator('[data-page=providers]').click();
     assert.equal(await page.locator('#transport-form').isVisible(), false);
+    assert.equal(await page.locator('#authorship-form').isVisible(), false);
     await page.locator('[data-page=providers]').click();
     assert.equal(await page.locator('#provider-form').isVisible(), false);
     await page.locator('[data-page=profiles]').click();

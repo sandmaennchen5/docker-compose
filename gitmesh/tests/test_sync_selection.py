@@ -2,7 +2,7 @@
 import copy
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from test_http import HttpCase, mesh
 
 class SyncSelectionTests(HttpCase):
@@ -47,6 +47,27 @@ class SyncSelectionTests(HttpCase):
                 config = copy.deepcopy(self.config_value)
                 config['repositories'][0]['sync_overrides'] = overrides
                 self.assertEqual(self.save(config), 400)
+
+    def test_save_during_sync_keeps_running_snapshot_and_updates_next_job(self):
+        self.assertEqual(self.save(self.config_value), 200)
+        snapshot = mesh.load_config()['repositories'][0]
+        changed = copy.deepcopy(self.config_value)
+        changed['repositories'][0]['sync_overrides'] = {'wiki': False}
+        worker = MagicMock()
+        worker.active = {1: 'demo'}
+        # A running child holds the operations lock for its complete sync.
+        with mesh.runtime.file_lock(mesh.DATA), patch.object(mesh, 'WORKER', worker):
+            self.assertEqual(self.save(changed), 200)
+        self.assertTrue(snapshot['wiki'])
+        self.assertFalse(mesh.load_config()['repositories'][0]['wiki'])
+
+    def test_concurrent_configuration_writer_does_not_replace_config(self):
+        self.assertEqual(self.save(self.config_value), 200)
+        changed = copy.deepcopy(self.config_value)
+        changed['repositories'][0]['sync_overrides'] = {'wiki': False}
+        with mesh.runtime.file_lock(mesh.DATA, 'configuration'):
+            self.assertEqual(self.save(changed), 409)
+        self.assertTrue(mesh.load_config()['repositories'][0]['wiki'])
 
     def test_busy_save_does_not_claim_success_or_replace_saved_config(self):
         self.assertEqual(self.save(self.config_value), 200)

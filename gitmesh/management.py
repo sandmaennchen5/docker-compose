@@ -159,6 +159,8 @@ class Control:
         return result
 
     def save_provider(self, body):
+        import authorship
+        authorship.schema(self)
         identifier = body.get('id') or secrets.token_hex(8)
         name, kind, url = body.get('name', ''), body.get('kind'), body.get('url', '').rstrip('/')
         username, token = body.get('username', ''), body.get('token', '')
@@ -184,6 +186,10 @@ class Control:
             import transport
             if transport.settings(self, identifier)['has_key']:
                 raise ValueError('Vor Hostwechsel gespeicherten SSH-Schluessel entfernen')
+        if previous and (previous['url'] != url or previous['kind'] != kind):
+            with self.db() as db:
+                if db.execute('SELECT 1 FROM provider_authorship WHERE enabled=1 AND (id=? OR bot=?)', (identifier, identifier)).fetchone():
+                    raise ValueError('Vor Host- oder Typwechsel die Autoren-/Bot-Zuordnung deaktivieren')
         encrypted = self.cipher().encrypt(token.encode()).decode() if token else (previous['token'] if previous else '')
         if previous and (previous['url'] != url or previous['kind'] != kind) and previous['token'] and not token and not body.get('clear_token'):
             raise ValueError('Bei Host- oder Typwechsel Token neu eingeben oder entfernen')
@@ -194,6 +200,8 @@ class Control:
                        ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,url=excluded.url,
                        username=excluded.username,token=excluded.token,health='untested',checked=NULL""",
                        (identifier, name, kind, url, username, encrypted))
+            if token or body.get('clear_token') or previous and (previous['url'] != url or previous['kind'] != kind):
+                db.execute('DELETE FROM provider_accounts WHERE id=?', (identifier,))
             if allow_http:
                 db.execute('INSERT OR IGNORE INTO provider_http VALUES(?)', (identifier,))
             else:
@@ -203,6 +211,8 @@ class Control:
     def delete_provider(self, identifier, config):
         if any(identifier in r.get('remote_providers', {}).values() for r in config['repositories']):
             raise ValueError('Provider wird noch von einem Profil verwendet')
+        import authorship
+        authorship.before_delete(self, identifier, config)
         with self.db() as db:
             db.execute('DELETE FROM providers WHERE id=?', (identifier,))
             db.execute('DELETE FROM provider_transport WHERE id=?', (identifier,))
@@ -409,6 +419,11 @@ class Control:
                     body['release_events'] = True
                 if remote == repo.get('source'):
                     body.update({key: bool(repo.get(option)) for key, option in [('issues_events', 'issues'), ('note_events', 'comments'), ('merge_requests_events', 'pull_requests'), ('wiki_page_events', 'wiki')]})
+                if remote == repo.get('source') or repo.get('direction', 'bidirectional') == 'bidirectional':
+                    if repo.get('milestones'):
+                        body['milestone_events'] = True
+                    if repo.get('comments'):
+                        body['note_events'] = True
                 method = 'PUT' if existing else 'POST'
             else:
                 body = {'active': True, 'events': ['push', 'release'] if repo.get('releases') else ['push'], 'config': {'url': callback, 'content_type': 'json',
@@ -417,6 +432,11 @@ class Control:
                     for option, event in [('issues', 'issues'), ('comments', 'issue_comment'), ('pull_requests', 'pull_request'), ('wiki', 'gollum' if provider['kind'] == 'github' else 'wiki')]:
                         if repo.get(option):
                             body['events'].append(event)
+                if remote == repo.get('source') or repo.get('direction', 'bidirectional') == 'bidirectional':
+                    if repo.get('comments') and 'issue_comment' not in body['events']:
+                        body['events'].append('issue_comment')
+                    if repo.get('milestones') and provider['kind'] == 'github':
+                        body['events'].append('milestone')
                 if not existing:
                     body.update({'name': 'web'} if provider['kind'] == 'github' else {'type': 'gitea'})
                 method = 'PATCH' if existing else 'POST'

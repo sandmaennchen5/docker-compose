@@ -1,7 +1,7 @@
 'use strict';
 let token = '', actor = null, providers = [], configuration = null, latest = null, discovered = [], discoveryNext = null;
-const openedJobDetails = new Set();
-let activeSave = null, saveNoticeTimer = null;
+const openedJobDetails = new Set(), openedMappings = new Set(), openedConflictValues = new Set();
+let activeSave = null, saveNoticeTimer = null, authorshipLoadSequence = 0;
 const el = id => document.getElementById(id);
 const admin = () => actor?.role === 'admin';
 const message = text => { el('message').textContent = text; };
@@ -87,6 +87,7 @@ window.addEventListener('beforeunload', event => {
   if (activeSave) { event.preventDefault(); event.returnValue = ''; }
 });
 function applyRole() {
+  el('profile-summary').hidden = admin();
   document.querySelectorAll('[data-admin]').forEach(n => { n.hidden = !admin(); });
   el('identity').textContent = actor.name + ' · ' + (admin() ? 'Administrator' : 'Nur lesen');
 }
@@ -99,11 +100,11 @@ function resetProviderForm() {
 }
 function clearSession() {
   clearTimeout(saveNoticeTimer); el('save-progress').hidden = true;
-  openedJobDetails.clear();
+  openedJobDetails.clear(); openedMappings.clear(); openedConflictValues.clear();
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
-  for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'shared-form', 'group-form']) el(id).reset();
-  resetProviderForm();
+  for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'authorship-form', 'shared-form', 'group-form']) el(id).reset();
+  resetProviderForm(); authorshipLoadSequence++; el('authorship-info').textContent = '';
   el('workspace').hidden = true; el('auth').hidden = false; el('logout').hidden = true; el('identity').textContent = '';
   for (const id of ['editors', 'repos', 'recent', 'jobs', 'provider-list', 'user-list', 'discovery-results', 'shared-list', 'group-list']) el(id).replaceChildren();
 }
@@ -208,7 +209,7 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   const choices = node('div', '', 'grid'); components.append(choices);
   for (const [key, label] of Object.entries(syncOptions)) field(choices, label, repo[key] ?? key === 'sync_branches', 'repo-' + key, {type: 'checkbox'});
   components.append(node('p', 'Diese Auswahl gilt pro Sync. Abweichungen vom gemeinsamen Profil werden als eigene Auswahl gespeichert.'));
-  components.append(node('p', 'Metadaten und Wiki: Quelle → Ziele. Kommentare benoetigen Issues oder PRs. PRs nur mit passenden Zielbranches; keine automatischen Merges. Wiki muss auf den Providern verfuegbar sein.'));
+  components.append(node('p', 'Meilensteine und Kommentare folgen der Richtung; Kommentare zu bereits zugeordneten Issues/PRs. Uebrige Metadaten und Wiki: Quelle → Ziele. Kommentare benoetigen Issues oder PRs. PRs nur mit passenden Zielbranches; keine automatischen Merges. Wiki muss auf den Providern verfuegbar sein.'));
   field(choices, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
   field(grid, 'Intervall in Sekunden (leer = Standard; 0 = nur manuell)', repo.interval ?? '', 'repo-interval', {type: 'number', min: 0, max: 86400});
   field(grid, 'Webhook-Secret: Umgebungsvariable', repo.webhook_secret_env || 'GITMESH_WEBHOOK_SECRET', 'repo-secret');
@@ -340,7 +341,37 @@ async function loadProviders() {
     button('Entfernen', async () => { await request('/api/providers/delete', 'POST', {id: p.id}); await loadProviders(); message('Provider entfernt.'); }, 'danger'));
     return card;
   }));
+  if (admin()) await loadAuthorship();
 }
+function authorshipBotOptions(value = '') {
+  const personal = providers.find(p => p.id === el('authorship-provider').value);
+  const select = el('authorship-bot'); select.replaceChildren();
+  for (const [id, name] of [['', 'Bot-Provider auswaehlen'], ...providers.filter(p => personal && p.id !== personal.id && p.kind === personal.kind && p.url === personal.url).map(p => [p.id, p.name])]) {
+    const option = node('option', name); option.value = id; select.append(option);
+  }
+  select.value = value;
+}
+async function loadAuthorship() {
+  const id = el('authorship-provider').value, sequence = ++authorshipLoadSequence;
+  const controls = [el('authorship-enabled'), el('authorship-bot'), el('authorship-load'), el('authorship-form').querySelector('button:not([type])')];
+  controls.forEach(control => { control.disabled = true; });
+  authorshipBotOptions();
+  el('authorship-enabled').checked = false; el('authorship-info').textContent = id ? 'Zuordnung wird geladen ...' : '';
+  try {
+    if (!id) return;
+    const value = await request('/api/authorship?' + new URLSearchParams({id}));
+    if (id !== el('authorship-provider').value || sequence !== authorshipLoadSequence) return;
+    authorshipBotOptions(value.bot_provider);
+    el('authorship-enabled').checked = value.enabled;
+    el('authorship-info').textContent = (value.enabled ? 'Aktiv. ' : 'Deaktiviert. ') + 'Persoenliches Konto: ' + (value.personal_account || 'noch nicht geprueft') + ' | Bot: ' + (value.bot_account || 'noch nicht geprueft');
+  } catch (error) {
+    if (sequence === authorshipLoadSequence) el('authorship-info').textContent = 'Zuordnung konnte nicht geladen werden.';
+    throw error;
+  } finally {
+    if (sequence === authorshipLoadSequence) controls.forEach(control => { control.disabled = false; });
+  }
+}
+
 async function loadUsers() {
   const users = (await request('/api/users')).users;
   el('user-list').replaceChildren(...users.map(u => {
@@ -349,17 +380,26 @@ async function loadUsers() {
     return card;
   }));
 }
-function profileCard(repo) {
+function profileCard(repo, previous) {
   const job = latest.jobs.find(j => j.profile === repo.name);
+  const diagnostic = latest.jobs.find(j => j.profile === repo.name && !['queued', 'running'].includes(j.status) && !String(j.origin).startsWith('conflicts/resolve:'));
+  const signature = JSON.stringify([repo, job, diagnostic, latest.schedules[repo.name], latest.resolved_conflicts]);
+  if (previous?._profileSignature === signature) return previous;
   const card = node('article', '', 'card ' + (job?.reset_at ? 'reset' : job?.status || ''));
   card.append(node('h2', repo.name), node('p', repo.remotes.join(repo.direction === 'one-way' ? ' → ' : ' ↔ ')),
     node('small', (repo.enabled ? 'Aktiv' : 'Deaktiviert') + ' · Nächster Lauf: ' + date(latest.schedules[repo.name])),
     node('p', job ? (job.reset_at ? 'Zurueckgesetzt (' + job.status + ')' : job.status) + ' · ' + date(job.requested) : 'Noch kein Job'));
-  const mapping = node('details'); mapping.append(node('summary', 'Repository-Zuordnung & Regeln'));
+  card.dataset.profile = repo.name; card._profileSignature = signature;
+  const mapping = node('details', '', 'profile-mapping');
+  mapping.open = previous?.querySelector('.profile-mapping')?.open ?? openedMappings.has(repo.name);
+  mapping.addEventListener('toggle', () => { if (mapping.isConnected) { if (mapping.open) openedMappings.add(repo.name); else openedMappings.delete(repo.name); } });
+  mapping.append(node('summary', 'Repository-Zuordnung & Regeln'));
   for (const [name, url] of Object.entries(repo.remote_urls || {})) mapping.append(node('p', name + ': ' + url));
   mapping.append(node('p', 'Was synchronisieren: ' + (repo.selected_components || ['sync_branches', 'tags']).map(key => syncOptions[key] || ({tags: 'Tags', releases: 'Releases'})[key]).join(', ')));
   mapping.append(node('p', 'Konfliktregel: ' + repo.policy + ' | Branches: ' + (repo.branches?.join(', ') || 'alle') + ' | Intervall: ' + repo.interval + ' s'));
   card.append(mapping);
+  const report = diagnostic && ['conflict', 'error'].includes(diagnostic.status) ? diagnostic : job;
+  if (report) { const panel = conflictPanel(report, 'profile:' + repo.name); if (panel) card.append(panel); }
   if (admin()) {
     const sync = button('Jetzt synchronisieren', async () => {
       await request('/api/sync', 'POST', {profile: repo.name}); message('Job angefordert: ' + repo.name); await refresh();
@@ -371,18 +411,86 @@ function profileCard(repo) {
   }
   return card;
 }
+function conflictPanel(job, scope) {
+  const data = job.details || {}, metadata = data.metadata || (data.items && data.counts ? data : {}), root = node('section', '', 'conflict-panel');
+  const git = data.conflicts || [];
+  const entries = (metadata.items || []).filter(item => item.status === 'conflict');
+  const extra = data.releases?.conflicts || (data.wiki?.status === 'conflict' ? 1 : 0);
+  const errors = [...(metadata.errors || []), ...(data.default_branch?.errors || []), ...(data.releases?.errors || [])];
+  if (!git.length && !entries.length && !metadata.counts?.conflict && !extra && !errors.length && job.status !== 'error') return null;
+  const resolvedCount = entries.filter(item => (latest.resolved_conflicts || []).includes(item.resolution_id)).length;
+  root.append(node('h3', 'Konflikte & Fehler'), node('p', git.length + ' Git-Konflikte · ' + (metadata.counts?.conflict || entries.length) + ' Metadatenkonflikte' + (resolvedCount ? ' (' + resolvedCount + ' bereits aufgeloest)' : '') + (extra ? ' · weitere Release-/Wiki-Konflikte' : '')));
+  for (const ref of git) {
+    const row = node('div', '', 'conflict-entry'); row.append(node('strong', 'Git: ' + ref), node('p', 'Die Historien oder Referenzstaende unterscheiden sich. Branches vergleichen und gegebenenfalls zusammenfuehren.'));
+    row.append(button('In Repository-Werkzeugen vergleichen', () => {
+      const repo = latest.repositories.find(r => r.name === job.profile);
+      navigate('tools'); el('tool-profile').value = job.profile;
+      el('tool-left').value = repo?.source || repo?.remotes[0] || '';
+      el('tool-right').value = String(ref).split(' @ ')[1] || repo?.remotes.find(n => n !== el('tool-left').value) || '';
+      el('tool-ref').value = String(ref).split(' @ ')[0];
+    })); root.append(row);
+  }
+  for (const [index, item] of entries.entries()) {
+    const row = node('div', '', 'conflict-entry');
+    const resolved = (latest.resolved_conflicts || []).includes(item.resolution_id);
+    row.append(node('strong', (syncOptions[item.category] || item.category) + ': ' + (item.name || 'Quell-ID ' + item.item)),
+      node('p', (item.target ? 'Remote: ' + item.target + '. ' : '') + (item.reason || (item.category === 'labels' ? 'Gleichnamiges vorhandenes Label ist nicht zugeordnet. Neuer Sync zeigt Namen und Vergleichswerte.' : 'Zuordnung oder Inhalte unterscheiden sich. Neuer Sync liefert weitere Details.'))));
+    if (item.values) {
+      const details = node('details', '', 'conflict-values'), key = scope + ':' + job.id + ':' + (item.resolution_id || index);
+      details.append(node('summary', 'Versionen / Werte vergleichen'));
+      details.open = openedConflictValues.has(key);
+      details.addEventListener('toggle', () => { if (details.isConnected) { if (details.open) openedConflictValues.add(key); else openedConflictValues.delete(key); } });
+      const versions = node('div', '', 'conflict-versions');
+      for (const [remote, fields] of Object.entries(item.values)) {
+        const version = node('div', '', 'conflict-version'); version.append(node('strong', remote));
+        for (const [field, value] of Object.entries(fields)) version.append(node('small', ({name: 'Name', title: 'Titel', description: 'Beschreibung', color: 'Farbe', body: 'Kommentar', due: 'Termin', closed: 'Geschlossen'})[field] || field), node('pre', String(value ?? '')));
+        versions.append(version);
+      }
+      details.append(versions); row.append(details);
+    }
+    if (resolved) row.append(node('p', 'Aufgeloest. Dieses Protokoll zeigt den damaligen Konflikt.', 'resolved-conflict'));
+    else if (admin() && item.resolution_id) {
+      for (const choice of item.choices || []) {
+        const label = item.category === 'labels' ? (choice === 'adopt' ? 'Vorhandenes Label zuordnen' : 'Quellwerte uebernehmen') : 'Version von ' + choice + ' uebernehmen';
+        row.append(button(label, () => resolveConflict(job, item, choice)));
+      }
+      if (item.category === 'labels') row.append(node('small', 'Zuordnen behaelt die aktuellen Zielwerte; spaetere Quellaenderungen werden wieder synchronisiert.'));
+    } else if (!resolved) row.append(node('small', 'Auf den Providern vergleichen oder erneut synchronisieren, um aktuelle Loesungsoptionen zu erhalten.'));
+    root.append(row);
+  }
+  for (const error of errors) root.append(node('p', (error.category || 'API') + (error.target || error.remote ? ' / ' + (error.target || error.remote) : '') + ': ' + (error.message || 'Fehler; Rohprotokoll pruefen'), 'conflict-entry'));
+  if (extra) root.append(node('p', 'Release-/Wiki-Details stehen im Rohprotokoll. Tags und Zielinhalte auf den Providern pruefen.'));
+  if (metadata.truncated) root.append(node('p', 'Die Einzelliste ist gekuerzt. Gesamtzaehler und Rohprotokoll beachten.'));
+  if (job.status === 'error' && !errors.length) root.append(node('p', data.message || data.git_error || 'Operation fehlgeschlagen. Details im Rohprotokoll.'));
+  if ((metadata.warnings || []).length) root.append(node('p', 'Hinweise: ' + metadata.warnings.join(' · ')));
+  if (admin() && entries.some(item => item.resolution_id)) root.append(node('small', 'Aufloesen ist moeglich, sobald kein Sync laeuft. Bei Bedarf Worker pausieren und laufende Jobs abschliessen lassen. Anzeige zuruecksetzen quittiert nur das alte Protokoll.'));
+  if (admin()) root.append(button('Erneut synchronisieren', async () => { await request('/api/sync', 'POST', {profile: job.profile}); message('Neue Pruefung eingereiht.'); await refresh(); }));
+  return root;
+}
+async function resolveConflict(job, item, choice) {
+  const text = item.category === 'labels' && choice === 'adopt' ? 'Vorhandenes Label zuordnen und seine aktuellen Zielwerte behalten? Spaetere Quellaenderungen werden synchronisiert.' : 'Die ausgewaehlten Werte uebernehmen und die abweichenden Werte dieses Eintrags ersetzen?';
+  if (!confirm(text)) return;
+  return runSave(null, async () => {
+    const result = await request('/api/conflicts/resolve', 'POST', {profile: job.profile, conflict_id: item.resolution_id, choice});
+    await refresh();
+    if (result.status !== 'success') throw new Error('Aufloesung nicht vollstaendig abgeschlossen. Bitte das neue Protokoll pruefen.');
+    message('Konflikt aufgeloest. Fuer den aktuellen Gesamtstatus einen neuen Sync starten.');
+  });
+}
 function jobCard(job, previous, scope) {
-  const signature = JSON.stringify(job);
+  const signature = JSON.stringify([job, latest.resolved_conflicts]);
   if (previous?._jobSignature === signature) return previous;
   const card = node('article', '', 'card ' + (job.reset_at ? 'reset' : job.status));
   card.dataset.jobId = String(job.id); card._jobSignature = signature;
   const head = node('div', '', 'heading'); head.append(node('strong', '#' + job.id + ' · ' + job.profile), node('span', job.reset_at ? 'Zurueckgesetzt (' + job.status + ')' : job.status, 'badge'));
-  const details = node('details'); details.append(node('summary', 'Details / Protokoll'), node('pre', JSON.stringify(job.details, null, 2)));
-  const key = scope + ':' + job.id, oldDetails = previous?.querySelector('details');
+  const details = node('details', '', 'job-raw'); details.append(node('summary', 'Details / Protokoll'), node('pre', JSON.stringify(job.details, null, 2)));
+  const key = scope + ':' + job.id, oldDetails = previous?.querySelector('details.job-raw');
   if (oldDetails) details.open = oldDetails.open;
   else details.open = openedJobDetails.has(key);
   details.addEventListener('toggle', () => { if (details.open) openedJobDetails.add(key); else openedJobDetails.delete(key); });
-  card.append(head, node('p', date(job.requested) + ' · ' + job.origin + ' · Versuche: ' + job.attempts), details);
+  card.append(head);
+  const conflicts = conflictPanel(job, scope); if (conflicts) card.append(conflicts);
+  card.append(node('p', date(job.requested) + ' · ' + job.origin + ' · Versuche: ' + job.attempts), details);
   if (job.reset_at) card.append(node('small', 'Anzeige zurueckgesetzt am ' + date(job.reset_at) + ' von ' + job.reset_by));
   if (admin() && !['queued', 'running'].includes(job.status)) {
     if (['error', 'conflict'].includes(job.status) && !job.reset_at) card.append(button('Anzeige zuruecksetzen', () => manageLogs('reset', {id: job.id})));
@@ -408,7 +516,9 @@ async function refresh() {
     const stats = [['Profile', latest.repositories.length], ['Aktive Jobs', Object.keys(latest.worker.active).length],
       ['Warteschlange', latest.jobs.filter(j => j.status === 'queued').length], ['Konflikte / Fehler', latest.jobs.filter(j => !j.reset_at && ['conflict', 'error'].includes(j.status)).length]];
     el('stats').replaceChildren(...stats.map(([label, value]) => { const c = node('article', '', 'stat'); c.append(node('strong', String(value)), node('span', label)); return c; }));
-    el('repos').replaceChildren(...latest.repositories.map(profileCard)); el('profile-summary').replaceChildren(...latest.repositories.map(profileCard));
+    const previousProfiles = new Map([...el('repos').children].map(card => [card.dataset.profile, card]));
+    const profileCards = latest.repositories.map(repo => profileCard(repo, previousProfiles.get(repo.name)));
+    if (profileCards.length !== el('repos').children.length || profileCards.some((card, i) => el('repos').children[i] !== card)) el('repos').replaceChildren(...profileCards); el('profile-summary').replaceChildren(...latest.repositories.map(repo => profileCard(repo)));
     el('profile-summary').hidden = admin();
     document.querySelectorAll('.repo-editor').forEach(updateEditorSummary);
     renderJobList(el('recent'), latest.jobs.slice(0, 5)); renderJobs();
@@ -516,6 +626,13 @@ saveForm('provider-form', async () => {
       allow_http: el('provider-http').checked, url: el('provider-url').value.trim(), username: el('provider-username').value.trim(), token: el('provider-token').value, clear_token: el('provider-clear').checked});
     resetProviderForm(); await loadProviders(); message('Provider gespeichert.');
   } catch (error) { el('provider-token').value = ''; throw error; }
+});
+el('authorship-provider').addEventListener('change', () => loadAuthorship().catch(showError));
+el('authorship-load').addEventListener('click', () => loadAuthorship().catch(showError));
+saveForm('authorship-form', async () => {
+  const result = await request('/api/authorship', 'POST', {id: el('authorship-provider').value, enabled: el('authorship-enabled').checked, bot_provider: el('authorship-bot').value});
+  await loadAuthorship();
+  message(result.enabled ? 'Autoren-Zuordnung gespeichert: eigene Beitraege als ' + result.personal_account + ', fremde als ' + result.bot_account + '.' : 'Autoren-Zuordnung deaktiviert. Bereits verfasste Kopien behalten ihren Autor.');
 });
 saveForm('user-form', async () => { const name = el('user-name').value;
   try {

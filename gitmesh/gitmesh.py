@@ -23,6 +23,8 @@ import runtime
 import transport
 import releases
 import metadata
+import authorship
+import conflicts as conflict_store
 import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -273,7 +275,7 @@ def _save_config(config):
         return False
     temporary = None
     try:
-        if MAINTENANCE or WORKER is not None and WORKER.active:
+        if MAINTENANCE:
             return False
         for repo in resolve_config(config)['repositories']:
             for remote, identifier in repo.get('remote_providers', {}).items():
@@ -303,7 +305,7 @@ def _save_config(config):
 
 def save_config(config):
     try:
-        with runtime.file_lock(DATA):
+        with runtime.file_lock(DATA, 'configuration'):
             return _save_config(config)
     except runtime.Busy:
         return False
@@ -587,11 +589,13 @@ def _repository_action(action, body, actor):
             result = tools.change_ref(repo, body)
         elif action == 'merge':
             result = tools.merge(repo, body)
+        elif action == 'conflicts/resolve':
+            result = conflict_store.resolve(control(), repo, body, actor['name'])
         elif action == 'webhooks/register':
             result = {'webhooks': control().register_hooks(repo, config.get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''))}
         else:
             raise ValueError('Unknown operation')
-        control().record_action(repo['name'], action, result, actor['name'], 'conflict' if result.get('status') in ('conflict', 'unrelated') else 'success')
+        control().record_action(repo['name'], action, result, actor['name'], 'conflict' if result.get('status') in ('conflict', 'unrelated') else 'error' if result.get('status') == 'error' else 'success')
         return result
     finally:
         GIT_CONTEXT.credentials = {}
@@ -662,6 +666,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, actor)
         if path == '/api/settings':
             return self.reply(200, load_config(expand=False))
+        if path == '/api/authorship':
+            return self.reply(200, authorship.settings(control(), parse_qs(urlsplit(self.path).query).get('id', [''])[0]))
         if path == '/api/transport':
             return self.reply(200, transport.settings(control(), parse_qs(urlsplit(self.path).query).get('id', [''])[0]))
         if path == '/api/providers':
@@ -688,6 +694,7 @@ class Handler(BaseHTTPRequestHandler):
                                   'remote_urls': r['remotes'], 'policy': r.get('policy', 'ff-only'),
                                   'branches': r.get('branches', []), 'tags': r.get('tags', True), 'selected_components': selected_components(r),
                                   'interval': r.get('interval', config.get('interval', 300))} for r in config['repositories']],
+                'resolved_conflicts': conflict_store.resolved(store),
                 'history': [dict(time=t, repository=r, status=status, details=json.loads(details))
                             for t, r, status, details in rows], 'jobs': store.jobs(), 'schedules': store.schedules()})
         self.reply(404, {'error': 'Not found'})
@@ -733,11 +740,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if actor['role'] != 'admin':
             return self.reply(403, {'error': 'Lesebenutzer dürfen keine Änderungen vornehmen'})
-        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register'):
+        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve'):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if self.path == '/api/settings':
             if not save_config(body):
-                return self.reply(409, {'error': 'Synchronisierung läuft. Bitte anschließend erneut speichern.'})
+                return self.reply(409, {'error': 'Andere Verwaltungsoperation läuft. Bitte erneut speichern.'})
             return self.reply(200, {'status': 'saved'})
         if self.path == '/api/sync':
             if body.get('shared_profile'):
@@ -752,18 +759,24 @@ class Handler(BaseHTTPRequestHandler):
             identifiers = run_all(profile, 'manual:' + actor['name'])
             return self.reply(202, {'status': 'queued; duplicate requests are coalesced', 'jobs': identifiers})
         if self.path == '/api/providers':
-            with LOCK, runtime.file_lock(DATA):
+            with LOCK, runtime.file_lock(DATA), runtime.file_lock(DATA, 'configuration'):
                 if MAINTENANCE or WORKER and WORKER.active:
                     return self.reply(409, {'error': 'Aktive Syncs zuerst beenden lassen'})
                 identifier = store.save_provider(body)
             return self.reply(200, {'id': identifier})
+        if self.path == '/api/authorship':
+            with LOCK, runtime.file_lock(DATA):
+                if MAINTENANCE or WORKER and WORKER.active:
+                    return self.reply(409, {'error': 'Aktive Syncs vor Aenderungen der Autoren-Zuordnung abschliessen lassen'})
+                result = authorship.save(store, body)
+            return self.reply(200, result)
         if self.path == '/api/transport':
             with LOCK, runtime.file_lock(DATA):
                 return self.reply(200, transport.save(store, body))
         if self.path == '/api/providers/test':
             return self.reply(200, store.test_provider(body.get('id')))
         if self.path == '/api/providers/delete':
-            with LOCK, runtime.file_lock(DATA):
+            with LOCK, runtime.file_lock(DATA), runtime.file_lock(DATA, 'configuration'):
                 if MAINTENANCE or WORKER and WORKER.active:
                     return self.reply(409, {'error': 'Aktive Syncs zuerst beenden lassen'})
                 store.delete_provider(body.get('id'), load_config())
