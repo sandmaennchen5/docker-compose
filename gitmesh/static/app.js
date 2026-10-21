@@ -168,7 +168,7 @@ async function loadProviders() {
       el('provider-form-title').textContent = 'Provider bearbeiten: ' + p.name;
       el('provider-save').textContent = 'Änderungen speichern';
       el('provider-id').value = p.id; el('provider-name').value = p.name; el('provider-kind').value = p.kind;
-      el('provider-url').value = p.url; el('provider-username').value = p.username; el('provider-token').value = ''; el('provider-clear').checked = false;
+      el('provider-http').checked = !!p.allow_http; el('provider-url').value = p.url; el('provider-username').value = p.username; el('provider-token').value = ''; el('provider-clear').checked = false;
       el('provider-form').scrollIntoView({behavior: 'smooth'});
     }), button('Verbindung testen', async () => { try { const r = await request('/api/providers/test', 'POST', {id: p.id}); message('Verbunden als ' + r.account); } finally { await loadProviders(); } }),
     button('Entfernen', async () => { await request('/api/providers/delete', 'POST', {id: p.id}); await loadProviders(); message('Provider entfernt.'); }, 'danger'));
@@ -293,7 +293,7 @@ el('provider-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     await request('/api/providers', 'POST', {id: el('provider-id').value || undefined, name: el('provider-name').value.trim(), kind: el('provider-kind').value,
-      url: el('provider-url').value.trim(), username: el('provider-username').value.trim(), token: el('provider-token').value, clear_token: el('provider-clear').checked});
+      allow_http: el('provider-http').checked, url: el('provider-url').value.trim(), username: el('provider-username').value.trim(), token: el('provider-token').value, clear_token: el('provider-clear').checked});
     resetProviderForm(); await loadProviders(); message('Provider gespeichert.');
   } catch (error) { el('provider-token').value = ''; showError(error); }
 });

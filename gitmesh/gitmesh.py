@@ -188,9 +188,11 @@ def _validate_config(config):
             if not isinstance(url, str) or len(url) > 2048 or any(c.isspace() for c in url):
                 raise ValueError('Ungültige Remote-URL')
             parsed = urlsplit(url)
-            if parsed.scheme not in ('https', 'ssh') or not parsed.hostname or parsed.password or (parsed.scheme == 'https' and parsed.username):
+            if parsed.scheme not in ('https', 'http', 'ssh') or not parsed.hostname or parsed.password or (parsed.scheme in ('https', 'http') and parsed.username):
                 raise ValueError('HTTPS oder SSH ohne eingebettete Zugangsdaten verwenden')
             parsed.port
+            if parsed.scheme == 'http' and not providers.get(remote):
+                raise ValueError('HTTP-Remote benoetigt einen zugeordneten Provider mit ausdruecklicher HTTP-Freigabe')
             if parsed.query or parsed.fragment:
                 raise ValueError('Remote-URLs ohne Query oder Fragment verwenden')
             canonical = (parsed.hostname.lower(), parsed.path.rstrip('/').removesuffix('.git'))
@@ -256,7 +258,9 @@ def _save_config(config):
                 url = urlsplit(repo['remotes'][remote])
                 if repo.get('create_missing') and remote != repo['source']:
                     management.Control.repository_path(provider, repo['remotes'][remote])
-                if url.scheme == 'https' and url.netloc != urlsplit(provider['url']).netloc:
+                if url.scheme == 'http' and not provider.get('allow_http'):
+                    raise ValueError('Internes HTTP ist fuer diesen Provider nicht freigegeben')
+                if url.scheme in ('https', 'http') and (url.scheme, url.netloc) != (urlsplit(provider['url']).scheme, urlsplit(provider['url']).netloc):
                     raise ValueError('Remote-URL passt nicht zum zugeordneten Provider')
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=CONFIG.parent,
@@ -397,8 +401,10 @@ def prepare_credentials(repo):
     for remote, identifier in repo.get('remote_providers', {}).items():
         provider = control().provider(identifier, reveal=True)
         parsed = urlsplit(transport.remote_url(control(), repo, remote))
-        if parsed.scheme == 'https':
-            if parsed.netloc != urlsplit(provider['url']).netloc:
+        if parsed.scheme in ('https', 'http'):
+            if parsed.scheme == 'http' and not provider.get('allow_http'):
+                raise ValueError('Internes HTTP ist fuer diesen Provider nicht freigegeben')
+            if (parsed.scheme, parsed.netloc) != (urlsplit(provider['url']).scheme, urlsplit(provider['url']).netloc):
                 raise ValueError('Remote-URL und Provider stimmen nicht überein')
             if provider['token']:
                 username = provider['username'] or ('oauth2' if provider['kind'] == 'gitlab' else 'x-access-token')

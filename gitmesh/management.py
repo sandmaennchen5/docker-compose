@@ -72,6 +72,7 @@ class Control:
               url TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
               token TEXT NOT NULL DEFAULT '', health TEXT NOT NULL DEFAULT 'untested',
               checked REAL);
+            CREATE TABLE IF NOT EXISTS provider_http (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS provider_transport (id TEXT PRIMARY KEY, details TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat REAL, details TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS worker_groups (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
@@ -120,15 +121,16 @@ class Control:
         with self.db() as db:
             return [dict(id=r['id'], name=r['name'], kind=r['kind'], url=r['url'],
                          username=r['username'], has_token=bool(r['token']),
-                         health=r['health'], checked=r['checked'])
-                    for r in db.execute('SELECT * FROM providers ORDER BY name')]
+                         health=r['health'], checked=r['checked'], allow_http=bool(r['allow_http']))
+                    for r in db.execute('SELECT p.*, EXISTS(SELECT 1 FROM provider_http h WHERE h.id=p.id) AS allow_http FROM providers p ORDER BY name')]
 
     def provider(self, identifier, reveal=False):
         with self.db() as db:
-            row = db.execute('SELECT * FROM providers WHERE id=?', (identifier,)).fetchone()
+            row = db.execute('SELECT p.*, EXISTS(SELECT 1 FROM provider_http h WHERE h.id=p.id) AS allow_http FROM providers p WHERE id=?', (identifier,)).fetchone()
         if not row:
             raise ValueError('Provider nicht gefunden')
         result = dict(row)
+        result['allow_http'] = bool(result['allow_http'])
         result['token'] = self.cipher().decrypt(row['token'].encode()).decode() if reveal and row['token'] else ''
         return result
 
@@ -142,9 +144,12 @@ class Control:
             raise ValueError('Name und Provider-Typ prüfen')
         if not isinstance(url, str) or len(url) > 1024:
             raise ValueError('Ungültige Provider-URL')
+        allow_http = body.get('allow_http', False)
+        if type(allow_http) is not bool:
+            raise ValueError('HTTP-Freigabe muss ein Wahrheitswert sein')
         parsed = urlsplit(url)
-        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.query or parsed.fragment or any(c.isspace() for c in url):
-            raise ValueError('Provider-URL muss HTTPS ohne Zugangsdaten sein')
+        if parsed.scheme not in (('https', 'http') if allow_http else ('https',)) or not parsed.hostname or parsed.username or parsed.query or parsed.fragment or any(c.isspace() for c in url):
+            raise ValueError('Provider-URL muss HTTPS ohne Zugangsdaten sein; internes HTTP ausdruecklich freigeben')
         parsed.port  # validate port
         url = parsed._replace(netloc=parsed.netloc.lower()).geturl().rstrip('/')
         if not isinstance(username, str) or len(username) > 100 or any(c.isspace() for c in username) or not isinstance(token, str) or len(token) > 8192 or any(c in token for c in '\r\n'):
@@ -165,6 +170,10 @@ class Control:
                        ON CONFLICT(id) DO UPDATE SET name=excluded.name,kind=excluded.kind,url=excluded.url,
                        username=excluded.username,token=excluded.token,health='untested',checked=NULL""",
                        (identifier, name, kind, url, username, encrypted))
+            if allow_http:
+                db.execute('INSERT OR IGNORE INTO provider_http VALUES(?)', (identifier,))
+            else:
+                db.execute('DELETE FROM provider_http WHERE id=?', (identifier,))
         return identifier
 
     def delete_provider(self, identifier, config):
@@ -173,9 +182,12 @@ class Control:
         with self.db() as db:
             db.execute('DELETE FROM providers WHERE id=?', (identifier,))
             db.execute('DELETE FROM provider_transport WHERE id=?', (identifier,))
+            db.execute('DELETE FROM provider_http WHERE id=?', (identifier,))
 
     def api(self, provider, path, query=None, *, method='GET', body=None):
         url = provider['url']
+        if urlsplit(url).scheme == 'http' and not provider.get('allow_http'):
+            raise ValueError('Internes HTTP ist fuer diesen Provider nicht freigegeben')
         if provider['kind'] == 'github':
             base = 'https://api.github.com' if url == 'https://github.com' else url + '/api/v3'
         else:
@@ -205,15 +217,15 @@ class Control:
     @staticmethod
     def repository_path(provider, clone_url):
         parsed, base = urlsplit(clone_url), urlsplit(provider['url'])
-        if parsed.scheme not in ('https', 'ssh') or parsed.hostname != base.hostname or parsed.password or parsed.query or parsed.fragment:
+        if parsed.scheme not in (('https', 'http', 'ssh') if provider.get('allow_http') else ('https', 'ssh')) or parsed.hostname != base.hostname or parsed.password or parsed.query or parsed.fragment:
             raise ValueError('Ziel-URL passt nicht zum Provider')
-        if parsed.scheme == 'https' and (parsed.netloc != base.netloc or parsed.username):
+        if parsed.scheme in ('https', 'http') and (parsed.scheme != base.scheme or parsed.netloc != base.netloc or parsed.username):
             raise ValueError('Ziel-URL passt nicht zum Provider')
         path, prefix = unquote(parsed.path), unquote(base.path).rstrip('/')
         if prefix:
             if path.startswith(prefix + '/'):
                 path = path[len(prefix):]
-            elif parsed.scheme == 'https':
+            elif parsed.scheme in ('https', 'http'):
                 raise ValueError('Ziel liegt ausserhalb des Provider-Basispfads')
         parts = path.strip('/').removesuffix('.git').split('/')
         if len(parts) < 2 or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', part) or part in ('.', '..') for part in parts):
@@ -378,7 +390,7 @@ class Control:
             if not isinstance(name, str) or not isinstance(clone, str):
                 continue
             parsed = urlsplit(clone)
-            if parsed.scheme != 'https' or parsed.netloc != urlsplit(provider['url']).netloc or parsed.username:
+            if parsed.scheme != urlsplit(provider['url']).scheme or parsed.scheme not in (('https', 'http') if provider.get('allow_http') else ('https',)) or parsed.netloc != urlsplit(provider['url']).netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
                 continue
             repos.append({'full_name': name, 'clone_url': clone,
                           'ssh_url': repo.get('ssh_url') or repo.get('ssh_url_to_repo', ''),

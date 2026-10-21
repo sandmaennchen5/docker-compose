@@ -36,10 +36,12 @@ def settings(store, identifier, reveal=False):
 
 def save(store, body):
     identifier = body.get('id')
-    store.provider(identifier)
+    provider = store.provider(identifier)
     protocol, host, user, port = body.get('protocol', 'auto'), body.get('ssh_host', ''), body.get('ssh_user', 'git'), body.get('ssh_port', 22)
+    if protocol == 'http' and (not provider.get('allow_http') or urlsplit(provider['url']).scheme != 'http'):
+        raise ValueError('HTTP-Transport benoetigt einen ausdruecklich freigegebenen HTTP-Provider')
     known, key = body.get('known_hosts', ''), body.get('key', '')
-    if protocol not in ('auto', 'https', 'ssh') or not isinstance(host, str) or host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', host):
+    if protocol not in ('auto', 'https', 'http', 'ssh') or not isinstance(host, str) or host and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', host):
         raise ValueError('Transport oder SSH-Hostname ungueltig')
     if not isinstance(user, str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}', user) or type(port) is not int or not 1 <= port <= 65535:
         raise ValueError('SSH-Benutzer oder Port ungueltig')
@@ -95,7 +97,9 @@ def remote_url(store, repo, remote):
         return original
     provider = store.provider(identifier)
     owner, name = store.repository_path(provider, original)
-    if protocol == 'https':
+    if protocol in ('https', 'http'):
+        if urlsplit(provider['url']).scheme != protocol or protocol == 'http' and not provider.get('allow_http'):
+            raise ValueError('Git-Transport und Provider-URL muessen dasselbe HTTP(S)-Protokoll verwenden')
         return provider['url'].rstrip('/') + '/' + owner + '/' + name + '.git'
     host = value['ssh_host'] or urlsplit(provider['url']).hostname
     return 'ssh://' + value['ssh_user'] + '@' + host + (':' + str(value['ssh_port']) if value['ssh_port'] != 22 else '') + '/' + owner + '/' + name + '.git'
