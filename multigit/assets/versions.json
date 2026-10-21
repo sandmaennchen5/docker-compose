@@ -1,0 +1,6 @@
+{
+  "xterm": {
+    "version": "5.5.0",
+    "package": "@xterm/xterm"
+  }
+}

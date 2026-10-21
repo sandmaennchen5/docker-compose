@@ -1,0 +1,10 @@
+# Wird nach einem erfolgreichen GitHub-Image-Build automatisch ersetzt.
+# Noch keine veroeffentlichten Image-Versionen durch diesen Workflow ermittelt.
+build:
+  status: "pending_first_github_build"
+  image: "ghcr.io/sandmaennchen5/multigit"
+  platforms: ["linux/amd64", "linux/arm64"]
+base:
+  image: "debian:bookworm-slim"
+  builder_image: "rust:bookworm"
+platforms: {}

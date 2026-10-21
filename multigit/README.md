@@ -109,3 +109,11 @@ python -m unittest discover -s multigit -p 'test_*.py' -v
 ~~~
 
 Die Terminal-Bibliothek xterm.js 5.5.0 wird lokal mitgeliefert; Lizenz und Herkunft stehen unter assets/. Die Oberfläche lädt keine Terminal-Skripte von einem CDN.
+
+## Automatischer Versionsbericht
+
+Nach erfolgreicher Veröffentlichung liest der Workflow beide Images über ihre Plattform-Digests aus und erzeugt multigit/versions.yaml. Er dokumentiert pro Architektur MultiGit samt Upstream-Commit, Python, Git, OpenSSH, OpenSSL, SQLite, Keyring, D-Bus, GnuPG, Nano, alle Debian-Pakete und vorhandene Python-Distributionen. Zusätzlich werden Rust-/Cargo-Versionen aus der Build-Stufe, die in Cargo.lock erfassten Pakete sowie xterm.js-Version und Asset-Prüfsumme festgehalten. Das Lockfile enthält auch optionale, Entwicklungs- und plattformfremde Pakete; es ist kein Nachweis ausschließlich einkompilierter Rust-Pakete.
+
+Der Bericht enthält den eigenen Quell-Commit, Index-Digest, Plattform-Digests, Image-Erstellungszeitpunkte und Messdatum. Die Messung läuft ohne Netzwerkzugriff innerhalb der Container und umgeht den Web-/Keyring-Start.
+
+Auf dem unveränderten Standardbranch wird nur multigit/versions.yaml automatisch committet. Bei Tags oder wenn der Branch während des Builds weitergelaufen ist, bleibt der Bericht als GitHub-Artefakt verfügbar. Pull Requests schreiben nichts zurück. Der Versionsbericht ist vom Build-Pfadfilter ausgeschlossen, um Wiederholungsschleifen zu vermeiden. Bis zum ersten erfolgreichen Build enthält die Datei einen ausdrücklich gekennzeichneten Platzhalter.

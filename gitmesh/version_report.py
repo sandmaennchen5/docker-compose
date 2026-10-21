@@ -13,7 +13,11 @@ PLATFORMS = ('linux/amd64', 'linux/arm64')
 
 
 def command(*args):
-    return subprocess.run(args, check=True, capture_output=True, text=True, timeout=180).stdout.strip()
+    result = subprocess.run(args, capture_output=True, text=True, timeout=180)
+    if result.returncode:
+        detail = (result.stderr or result.stdout or 'No diagnostic output').strip()
+        raise RuntimeError('Command failed (exit ' + str(result.returncode) + '): ' + ' '.join(args) + '\n' + detail)
+    return result.stdout.strip()
 
 
 def probe():
@@ -51,6 +55,19 @@ def report(image, digest, revision, ref, measurements):
             'base': {'image': 'python:3.13-slim'}, 'platforms': measurements}
 
 
+def collect(image, digest):
+    measurements = {}
+    reference = image + '@' + digest
+    for target in PLATFORMS:
+        # The classic Docker image store caches only one architecture per index reference.
+        # Pull explicitly before each run, even when that index digest is already cached.
+        command('docker', 'pull', '--platform', target, reference)
+        output = command('docker', 'run', '--rm', '--pull=never', '--network', 'none', '--platform', target,
+                         '--entrypoint', 'python', reference, '/app/version_report.py', '--probe')
+        measurements[target] = json.loads(output)
+    return measurements
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--probe', action='store_true')
@@ -65,11 +82,7 @@ def main():
         return
     if not args.image or not args.digest or not args.revision:
         parser.error('--image, --digest and --revision are required')
-    measurements = {}
-    for target in PLATFORMS:
-        output = command('docker', 'run', '--rm', '--network', 'none', '--platform', target, '--entrypoint', 'python',
-                         args.image + '@' + args.digest, '/app/version_report.py', '--probe')
-        measurements[target] = json.loads(output)
+    measurements = collect(args.image, args.digest)
     result = report(args.image, args.digest, args.revision, args.ref, measurements)
     Path(args.output).write_text('\n'.join(yaml_lines(result)) + '\n', encoding='utf-8', newline='\n')
 
