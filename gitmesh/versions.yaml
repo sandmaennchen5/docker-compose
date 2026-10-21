@@ -1,10 +1,10 @@
 "build":
   "date": "2026.10.21"
   "git_tag": ""
-  "git_revision": "15078e0ee867fd5bee9e3a5c4bf9d7c8bfc64e98"
+  "git_revision": "fee7d4b83f02cee4508cf79432e117e816e433e1"
   "image": "ghcr.io/sandmaennchen5/gitmesh"
-  "image_tag": "sha-15078e0ee867fd5bee9e3a5c4bf9d7c8bfc64e98"
-  "image_digest": "sha256:baf7070e9eb1b879edfd050d3dcd6ed106fb5483c1eb3aa6a360df9385cd1393"
+  "image_tag": "sha-fee7d4b83f02cee4508cf79432e117e816e433e1"
+  "image_digest": "sha256:fef9de2c9cb2c38971fa9e147974dfc2e7ed0f41fdd54a752d62cb9c927954cc"
   "platforms": ["linux/amd64", "linux/arm64"]
 "base":
   "image": "python:3.13-slim"
@@ -12,32 +12,36 @@
   "linux/amd64":
     "python": "3.13.16"
     "git": "2.47.3"
+    "git_lfs": "git-lfs/3.6.1 (GitHub; linux amd64; go 1.24.4)"
     "openssh": "OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026"
     "openssl": "OpenSSL 3.5.7 9 Jun 2026"
     "sqlite": "3.46.1"
     "os": "Debian GNU/Linux 13 (trixie)"
     "packages":
       "git": "1:2.47.3-0+deb13u1"
+      "git-lfs": "3.6.1-1+deb13u1"
       "openssh-client": "1:10.0p1-7+deb13u4"
       "ca-certificates": "20250419+deb13u1"
     "python_packages":
       "cryptography": "50.0.2"
       "cffi": "2.1.1"
       "pycparser": "3.11"
-    "image_digest": "sha256:99e23664f3bc1752051465dbe51dad0704d61796900ca2e41386f9009939fd92"
+    "image_digest": "sha256:bbfedba414539bfaa89a59d58c6c79e72cdd38941f98962b40533bac9cfcc459"
   "linux/arm64":
     "python": "3.13.16"
     "git": "2.47.3"
+    "git_lfs": "git-lfs/3.6.1 (GitHub; linux arm64; go 1.24.4)"
     "openssh": "OpenSSH_10.0p2 Debian-7+deb13u4, OpenSSL 3.5.7 9 Jun 2026"
     "openssl": "OpenSSL 3.5.7 9 Jun 2026"
     "sqlite": "3.46.1"
     "os": "Debian GNU/Linux 13 (trixie)"
     "packages":
       "git": "1:2.47.3-0+deb13u1"
+      "git-lfs": "3.6.1-1+deb13u1"
       "openssh-client": "1:10.0p1-7+deb13u4"
       "ca-certificates": "20250419+deb13u1"
     "python_packages":
       "cryptography": "50.0.2"
       "cffi": "2.1.1"
       "pycparser": "3.11"
-    "image_digest": "sha256:6c8b611dc1f3f56ffb08059c67054ff3e122bfd7f72c56f5f6cfc7632f25e087"
+    "image_digest": "sha256:3fa29fd2773bce8b3fb89bc3662f47c5b9e8340b62ef626830c1db1d096bf76e"
