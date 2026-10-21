@@ -7,6 +7,7 @@ services:
     ports:
       - "127.0.0.1:8088:8080"
     environment:
+      GITMESH_ROLE: web
       GITMESH_VAULT_KEY: ${GITMESH_VAULT_KEY:-}
       GITMESH_ADMIN_TOKEN: ${GITMESH_ADMIN_TOKEN:?Set a random admin token of at least 32 characters}
       GITMESH_WEBHOOK_SECRET: ${GITMESH_WEBHOOK_SECRET:?Set a random webhook secret}
@@ -24,6 +25,30 @@ services:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
       interval: 30s
+      timeout: 5s
+      retries: 3
+  gitmesh-worker:
+    image: ${GITMESH_IMAGE:-ghcr.io/sandmaennchen5/gitmesh:latest}
+    restart: unless-stopped
+    stop_grace_period: 5m
+    environment:
+      GITMESH_ROLE: worker
+      GITMESH_VAULT_KEY: ${GITMESH_VAULT_KEY:-}
+      GITMESH_ADMIN_TOKEN: ${GITMESH_ADMIN_TOKEN:?Set a random admin token of at least 32 characters}
+      GITMESH_WEBHOOK_SECRET: ${GITMESH_WEBHOOK_SECRET:?Set a random webhook secret}
+    volumes:
+      - gitmesh-data:/data
+      # - ./ssh:/home/gitmesh/.ssh:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3,time; db=sqlite3.connect('/data/history.db'); row=db.execute('SELECT heartbeat FROM runtime_state WHERE id=1').fetchone(); assert row and time.time()-row[0]<15"]
+      interval: 10s
       timeout: 5s
       retries: 3
 volumes:

@@ -49,11 +49,12 @@ function resetProviderForm() {
   el('provider-save').textContent = 'Provider hinzufügen';
 }
 function clearSession() {
+  toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
-  for (const id of ['user-form', 'login', 'bootstrap']) el(id).reset();
+  for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'shared-form', 'group-form']) el(id).reset();
   resetProviderForm();
   el('workspace').hidden = true; el('auth').hidden = false; el('logout').hidden = true; el('identity').textContent = '';
-  for (const id of ['editors', 'repos', 'recent', 'jobs', 'provider-list', 'user-list', 'discovery-results']) el(id).replaceChildren();
+  for (const id of ['editors', 'repos', 'recent', 'jobs', 'provider-list', 'user-list', 'discovery-results', 'shared-list', 'group-list']) el(id).replaceChildren();
 }
 async function connect(value) {
   token = value;
@@ -80,9 +81,12 @@ function updateSource(card) {
   if ([...source.options].some(o => o.value === previous)) source.value = previous;
 }
 function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', target: ''}}) {
+  repo = {...repo, ...(configuration?.profiles?.[repo.profile] || {})};
   const card = node('fieldset', '', 'repo-editor');
   card.append(node('legend', repo.name || 'Neues Profil'));
   const grid = node('div', '', 'grid');
+  const shared = select(grid, 'Gemeinsames Profil', [['', 'Eigene Regeln'], ...Object.keys(configuration?.profiles || {}).map(name => [name, name])], repo.profile || '', 'repo-shared');
+  const workerSet = select(grid, 'Worker-Gruppe', [['default', 'Standard'], ...Object.keys(configuration?.worker_sets || {}).map(name => [name, name])], repo.worker_set || 'default', 'repo-worker-set');
   field(grid, 'Profilname', repo.name, 'repo-name', {required: true, pattern: '[A-Za-z0-9][A-Za-z0-9_-]{0,79}'});
   field(grid, 'Aktiv', repo.enabled !== false, 'repo-enabled', {type: 'checkbox'});
   const direction = select(grid, 'Richtung', [['bidirectional', 'Bidirektional'], ['one-way', 'Einweg: Quelle → Ziele']], repo.direction || 'bidirectional', 'repo-direction');
@@ -92,9 +96,11 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   field(grid, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
   field(grid, 'Intervall in Sekunden (leer = Standard; 0 = nur manuell)', repo.interval ?? '', 'repo-interval', {type: 'number', min: 0, max: 86400});
   field(grid, 'Webhook-Secret: Umgebungsvariable', repo.webhook_secret_env || 'GITMESH_WEBHOOK_SECRET', 'repo-secret');
+  field(grid, 'Webhooks beim Sync automatisch registrieren', !!repo.auto_webhooks, 'repo-hooks', {type: 'checkbox'});
   const create = field(grid, 'Fehlende Ziel-Repositories automatisch anlegen', !!repo.create_missing, 'repo-create', {type: 'checkbox'});
   const createPrivate = field(grid, 'Neue Ziele privat anlegen (deaktiviert = öffentlich)', repo.create_private !== false, 'repo-create-private', {type: 'checkbox'});
   const force = field(grid, 'Ich bestätige: Zielhistorie darf im Einwegmodus überschrieben werden.', repo.force_confirmed, 'repo-force', {type: 'checkbox'});
+  shared.addEventListener('change', () => applySharedRules(card));
   const updatePolicy = () => { source.disabled = direction.value !== 'one-way' && !create.checked; createPrivate.parentElement.hidden = !create.checked; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
   create.addEventListener('change', updatePolicy);
   policy.addEventListener('change', updatePolicy); direction.addEventListener('change', updatePolicy); updatePolicy();
@@ -107,14 +113,17 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
 }
 async function loadSettings() {
   configuration = await request('/api/settings');
+  el('public-url').value = configuration.public_url || '';
+  updateToolProfiles();
   el('interval').value = configuration.interval || 300;
   const w = configuration.worker || {};
   el('parallelism').value = w.parallelism ?? 2; el('min-free').value = w.min_free_mb ?? 128;
   el('min-memory').value = w.min_memory_mb ?? 0; el('max-load').value = w.max_load ?? 0;
   el('editors').replaceChildren(); configuration.repositories.forEach(repoEditor);
+  document.querySelectorAll('.repo-editor').forEach(applySharedRules); renderGroups();
 }
 function collectSettings() {
-  return {interval: Number(el('interval').value), worker: configuration.worker || {parallelism: 2, min_free_mb: 128, min_memory_mb: 0, max_load: 0}, repositories: [...el('editors').children].map(card => {
+  return {profiles: configuration.profiles || {}, worker_sets: configuration.worker_sets || {}, public_url: configuration.public_url || '', interval: Number(el('interval').value), worker: configuration.worker || {parallelism: 2, min_free_mb: 128, min_memory_mb: 0, max_load: 0}, repositories: [...el('editors').children].map(card => {
     const remotes = Object.create(null), remote_providers = Object.create(null);
     for (const row of card.querySelectorAll('.remote-row')) {
       const name = row.querySelector('.remote-name').value.trim();
@@ -122,20 +131,23 @@ function collectSettings() {
       remotes[name] = row.querySelector('.remote-url').value.trim();
       const provider = row.querySelector('.remote-provider').value; if (provider) remote_providers[name] = provider;
     }
-    const repo = {name: card.querySelector('.repo-name').value.trim(), enabled: card.querySelector('.repo-enabled').checked,
+    const repo = {profile: card.querySelector('.repo-shared').value, worker_set: card.querySelector('.repo-worker-set').value, name: card.querySelector('.repo-name').value.trim(), enabled: card.querySelector('.repo-enabled').checked,
       direction: card.querySelector('.repo-direction').value, source: card.querySelector('.repo-source').value,
+      auto_webhooks: card.querySelector('.repo-hooks').checked,
       create_missing: card.querySelector('.repo-create').checked, create_private: card.querySelector('.repo-create-private').checked,
       policy: card.querySelector('.repo-policy').value, force_confirmed: card.querySelector('.repo-force').checked,
       tags: card.querySelector('.repo-tags').checked, branches: card.querySelector('.repo-branches').value.split(',').map(x => x.trim()).filter(Boolean),
       webhook_secret_env: card.querySelector('.repo-secret').value.trim(), remotes, remote_providers};
     const interval = card.querySelector('.repo-interval').value;
     if (interval !== '') repo.interval = Number(interval);
+    if (!repo.profile) delete repo.profile;
+    else for (const key of Object.keys(configuration.profiles[repo.profile])) delete repo[key];
     return repo;
   })};
 }
 async function saveSettings() {
   const config = collectSettings();
-  await request('/api/settings', 'POST', config); configuration = config;
+  await request('/api/settings', 'POST', config); configuration = config; updateToolProfiles();
   message('Einstellungen gespeichert.'); await refresh();
 }
 async function loadProviders() {
@@ -213,6 +225,7 @@ async function refresh() {
     el('repos').replaceChildren(...latest.repositories.map(profileCard)); el('profile-summary').replaceChildren(...latest.repositories.map(profileCard));
     el('recent').replaceChildren(...latest.jobs.slice(0, 5).map(jobCard)); renderJobs();
     const w = latest.worker, r = w.resources;
+    renderGroups(w.groups || {});
     el('worker-status').replaceChildren(node('h2', 'Worker: ' + w.mode), node('p', 'Heartbeat: ' + date(w.heartbeat)),
       node('p', 'Aktive Profile: ' + (Object.values(w.active).join(', ') || 'keine')),
       node('p', 'Freier Speicherplatz: ' + r.disk_free_mb + ' MB · RAM verfügbar: ' + (r.memory_available_mb ?? 'unbekannt') + ' MB · Systemlast: ' + (r.load?.toFixed(2) ?? 'unbekannt')),
@@ -299,3 +312,179 @@ el('discovery-form').addEventListener('submit', e => { e.preventDefault(); disco
 el('discovery-more').addEventListener('click', () => discover(discoveryNext).catch(showError));
 el('discovery-import').addEventListener('click', () => { try { importDiscovery(); } catch (error) { showError(error); } });
 setInterval(refresh, 5000);
+
+let toolComparison = null;
+const toolBody = () => ({profile: el('tool-profile').value});
+function toolResult(result, target = 'tool-output') {
+  const pre = node('pre', JSON.stringify(result, null, 2)); el(target).replaceChildren(pre);
+}
+async function toolCall(action, body = {}) {
+  message('Repository-Operation laeuft ...');
+  const result = await request('/api/' + action, 'POST', {...toolBody(), ...body});
+  message('Repository-Operation abgeschlossen.'); return result;
+}
+el('tool-profile').addEventListener('change', () => {
+  toolComparison = null; ['tool-output', 'tool-comparison', 'tool-inventory'].forEach(id => el(id).replaceChildren());
+});
+el('tool-preview').addEventListener('click', () => toolCall('preview').then(renderPreview).catch(showError));
+async function loadToolRefs() {
+  const result = await toolCall('refs'); const root = el('tool-inventory'); root.replaceChildren();
+  for (const remote of result.remotes) {
+    const card = node('article', '', 'card'); card.append(node('h2', remote.name + (remote.missing ? ' (fehlt)' : '')));
+    for (const ref of remote.refs) {
+      const row = node('p', ref.ref + ' ' + ref.oid.slice(0, 12) + ' ');
+      if (admin()) row.append(button('Loeschen', async () => {
+        if (!confirm(remote.name + ': ' + ref.ref + ' loeschen? Ein spaeterer Sync kann die Referenz aus anderen Remotes wiederherstellen.')) return;
+        const split = ref.ref.indexOf('/');
+        toolResult(await toolCall('refs/change', {remote: remote.name, kind: ref.ref.slice(0, split), name: ref.ref.slice(split + 1), action: 'delete', expected_oid: ref.oid, confirm_delete: true}));
+        await loadToolRefs();
+      }, 'danger'));
+      card.append(row);
+    }
+    if (remote.truncated) card.append(node('p', 'Anzeige auf 1000 Referenzen begrenzt.'));
+    root.append(card);
+  }
+}
+el('tool-refs').addEventListener('click', () => loadToolRefs().catch(showError));
+el('tool-compare').addEventListener('submit', async event => {
+  event.preventDefault(); toolComparison = null;
+  const body = {...toolBody(), left: el('tool-left').value.trim(), right: el('tool-right').value.trim(), ref: el('tool-ref').value.trim()};
+  try { const result = await toolCall('compare', body); toolComparison = {body, result}; renderComparison(result); } catch (error) { showError(error); }
+});
+el('tool-merge').addEventListener('click', async () => {
+  try {
+    if (!toolComparison || toolComparison.body.profile !== el('tool-profile').value) throw new Error('Zuerst die Historien vergleichen.');
+    const {body, result} = toolComparison; const target = el('tool-target').value.trim();
+    if (!confirm(body.ref + ' auf ' + target + ' zusammenfuehren und pushen?')) return;
+    toolComparison = null;
+    toolResult(await toolCall('merge', {...body, target, expected_left: result.left_oid, expected_right: result.right_oid, confirm_merge: true}));
+  } catch (error) { showError(error); }
+});
+el('tool-create').addEventListener('submit', async event => {
+  event.preventDefault();
+  try { toolResult(await toolCall('refs/change', {action: 'create', remote: el('tool-remote').value.trim(), kind: el('tool-kind').value, name: el('tool-name').value.trim(), from_remote: el('tool-from').value.trim(), from_ref: el('tool-from-ref').value.trim()})); await loadToolRefs(); } catch (error) { showError(error); }
+});
+el('hook-settings').addEventListener('submit', async event => {
+  event.preventDefault();
+  try { const config = await request('/api/settings'); config.public_url = el('public-url').value.trim(); await request('/api/settings', 'POST', config); configuration.public_url = config.public_url; message('Oeffentliche Adresse gespeichert.'); } catch (error) { showError(error); }
+});
+el('tool-hooks').addEventListener('click', () => toolCall('webhooks/register').then(toolResult).catch(showError));
+
+function renderComparison(result) {
+  const root = el('tool-comparison'); root.replaceChildren();
+  root.append(node('p', 'Nur links: ' + result.left_only + ' Commits | Nur rechts: ' + result.right_only + ' Commits'));
+  const grid = node('div', '', 'grid');
+  for (const [title, commits] of [['Nur links', result.left_commits], ['Nur rechts', result.right_commits]]) {
+    const card = node('article', '', 'card'); card.append(node('h3', title));
+    for (const c of commits) card.append(node('p', c.oid.slice(0, 12) + ' ' + c.subject + ' (' + c.author + ')'));
+    grid.append(card);
+  }
+  root.append(grid, node('pre', result.stat), node('pre', result.patch));
+  if (result.patch_truncated) root.append(node('p', 'Diff-Anzeige auf 4000 Zeichen begrenzt.'));
+}
+
+function updateToolProfiles() {
+  const previous = el('tool-profile').value; el('tool-profile').replaceChildren();
+  configuration.repositories.forEach(r => { const o = node('option', r.name); o.value = r.name; el('tool-profile').append(o); });
+  if (configuration.repositories.some(r => r.name === previous)) el('tool-profile').value = previous;
+}
+
+function renderPreview(result) {
+  const root = el('tool-output'); root.replaceChildren();
+  root.append(node('h2', 'Sync-Vorschau: ' + result.status));
+  if (result.blocked) root.append(node('p', 'Konfliktregel reject: Das gesamte Profil wird uebersprungen.'));
+  for (const conflict of result.conflicts) root.append(node('p', 'Konflikt: ' + conflict));
+  for (const missing of result.missing_repositories || []) root.append(node('p', 'Ziel muss angelegt werden: ' + missing));
+  for (const update of result.plan) {
+    const card = node('article', '', 'card'); card.append(node('h3', update.remote + ': ' + update.ref));
+    card.append(node('p', (update.old || 'Neue Referenz') + ' → ' + (update.new || '')));
+    for (const c of update.commits || []) card.append(node('p', c.oid.slice(0, 12) + ' ' + c.subject));
+    root.append(card);
+  }
+  if (!result.plan.length) root.append(node('p', 'Keine Updates geplant.'));
+  if (result.plan_truncated) root.append(node('p', 'Anzeige auf 200 Updates begrenzt.'));
+}
+
+const sharedFields = {enabled: 'enabled', direction: 'direction', source: 'source', policy: 'policy', branches: 'branches', tags: 'tags', interval: 'interval', worker_set: 'worker-set', force_confirmed: 'force', create_missing: 'create', create_private: 'create-private', auto_webhooks: 'hooks', webhook_secret_env: 'secret'};
+function applySharedRules(card) {
+  const rules = configuration?.profiles?.[card.querySelector('.repo-shared').value] || {};
+  for (const [key, cls] of Object.entries(sharedFields)) {
+    const input = card.querySelector('.repo-' + cls); if (!input) continue;
+    input.disabled = Object.hasOwn(rules, key);
+    if (Object.hasOwn(rules, key)) {
+      if (input.type === 'checkbox') input.checked = rules[key];
+      else input.value = Array.isArray(rules[key]) ? rules[key].join(', ') : rules[key];
+    }
+  }
+}
+async function saveAdminConfig(edit) {
+  const config = await request('/api/settings'); edit(config);
+  await request('/api/settings', 'POST', config); await loadSettings();
+  message('Gespeichert. Repository-Editoren zeigen den gespeicherten Stand.');
+}
+function renderGroups(states = latest?.worker?.groups || {}) {
+  if (!configuration) return;
+  el('shared-list').replaceChildren();
+  for (const [name, profile] of Object.entries(configuration.profiles || {})) {
+    const card = node('article', '', 'card');
+    card.append(node('h2', name), node('p', configuration.repositories.filter(r => r.profile === name).length + ' Repository-Zuordnungen'), button('Bearbeiten', () => {
+      el('shared-name').value = name; el('shared-direction').value = profile.direction || 'bidirectional';
+      el('shared-source').value = profile.source || ''; el('shared-policy').value = profile.policy || 'ff-only';
+      el('shared-branches').value = (profile.branches || []).join(', '); el('shared-interval').value = profile.interval ?? configuration.interval;
+      el('shared-worker').value = profile.worker_set || 'default'; el('shared-enabled').checked = profile.enabled !== false;
+      el('shared-tags').checked = profile.tags !== false; el('shared-force').checked = !!profile.force_confirmed;
+    }), button('Entfernen', async () => {
+      if (!confirm('Gemeinsames Profil ' + name + ' entfernen? Zuerst alle Zuordnungen loesen.')) return;
+      await saveAdminConfig(c => { delete c.profiles[name]; });
+    }, 'danger')); el('shared-list').append(card);
+  }
+  el('group-list').replaceChildren();
+  for (const [name, settings] of Object.entries({default: configuration.worker || {}, ...(configuration.worker_sets || {})})) {
+    const state = states[name] || {};
+    const card = node('article', '', 'card'); card.append(node('h2', name), node('p', (state.mode || 'unbekannt') + ' | aktiv: ' + (state.active ?? 0) + ' | parallel: ' + (settings.parallelism ?? 2)), node('p', state.notice || ''));
+    for (const [action, label] of [['start', 'Starten'], ['pause', 'Pausieren'], ['resume', 'Fortsetzen'], ['stop', 'Stoppen']]) card.append(button(label, async () => {
+      await request('/api/worker', 'POST', {action, group: name}); await refresh();
+    }));
+    if (name !== 'default') {
+      card.append(button('Bearbeiten', () => {
+        el('group-name').value = name; el('group-parallelism').value = settings.parallelism ?? 2;
+        el('group-disk').value = settings.min_free_mb ?? 128; el('group-memory').value = settings.min_memory_mb ?? 0; el('group-load').value = settings.max_load ?? 0;
+      }), button('Entfernen', async () => { if (confirm('Worker-Gruppe ' + name + ' entfernen?')) await saveAdminConfig(c => { delete c.worker_sets[name]; }); }, 'danger'));
+    }
+    el('group-list').append(card);
+  }
+}
+el('shared-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const name = el('shared-name').value.trim();
+    const profile = {direction: el('shared-direction').value, source: el('shared-source').value.trim(), policy: el('shared-policy').value,
+      branches: el('shared-branches').value.split(',').map(x => x.trim()).filter(Boolean), interval: Number(el('shared-interval').value),
+      worker_set: el('shared-worker').value.trim(), enabled: el('shared-enabled').checked, tags: el('shared-tags').checked, force_confirmed: el('shared-force').checked};
+    await saveAdminConfig(c => { c.profiles ||= {}; c.profiles[name] = {...c.profiles[name], ...profile}; });
+  } catch (error) { showError(error); }
+});
+el('shared-sync').addEventListener('click', () => request('/api/sync', 'POST', {shared_profile: el('shared-name').value.trim()}).then(() => { message('Alle aktiven Zuordnungen eingereiht.'); return refresh(); }).catch(showError));
+el('group-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try { await saveAdminConfig(c => { c.worker_sets ||= {}; c.worker_sets[el('group-name').value.trim()] = {parallelism: Number(el('group-parallelism').value), min_free_mb: Number(el('group-disk').value), min_memory_mb: Number(el('group-memory').value), max_load: Number(el('group-load').value)}; }); }
+  catch (error) { showError(error); }
+});
+el('transport-load').addEventListener('click', async () => {
+  try {
+    const value = await request('/api/transport?id=' + encodeURIComponent(el('transport-provider').value));
+    el('transport-protocol').value = value.protocol; el('transport-host').value = value.ssh_host; el('transport-user').value = value.ssh_user;
+    el('transport-port').value = value.ssh_port; el('transport-hosts').value = value.known_hosts; el('transport-key').value = ''; el('transport-clear').checked = false;
+    el('transport-info').textContent = (value.has_key ? 'Schluessel verschluesselt gespeichert. ' : 'Kein gespeicherter Schluessel. ') + (value.fingerprints || []).join(' ');
+  } catch (error) { showError(error); }
+});
+el('transport-provider').addEventListener('change', () => { const id = el('transport-provider').value; el('transport-form').reset(); el('transport-provider').value = id; el('transport-key').value = ''; el('transport-info').textContent = 'Transport fuer diesen Provider zuerst laden.'; });
+el('transport-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const result = await request('/api/transport', 'POST', {id: el('transport-provider').value, protocol: el('transport-protocol').value, ssh_host: el('transport-host').value.trim(), ssh_user: el('transport-user').value.trim(), ssh_port: Number(el('transport-port').value), known_hosts: el('transport-hosts').value, key: el('transport-key').value, clear_key: el('transport-clear').checked});
+    el('transport-info').textContent = (result.has_key ? 'Schluessel gespeichert. ' : 'Kein Schluessel gespeichert. ') + (result.fingerprints || []).join(' ');
+    message('Transport gespeichert.');
+  } catch (error) { showError(error); }
+  finally { el('transport-key').value = ''; }
+});

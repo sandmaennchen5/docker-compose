@@ -18,11 +18,16 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs, quote, quote_plus
 import management
+import inspection
+import runtime
+import transport
+import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
 CONFIG = Path(os.environ.get('GITMESH_CONFIG', str(DATA / 'gitmesh.json')))
 LOCK = threading.Lock()
 WORKER = None
+MAINTENANCE = False
 GIT_CONTEXT = threading.local()
 
 
@@ -68,8 +73,9 @@ class GitFailure(RuntimeError):
                         'operation': operation, 'remote': remote, 'exit_code': exit_code, 'git_error': error, 'hint': hint}
 
 
-def git(path, *args, check=True):
+def _git(path, *args, check=True):
     env = dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, LC_ALL='C')
+    env.update(getattr(GIT_CONTEXT, 'ssh_env', {}))
     credentials = getattr(GIT_CONTEXT, 'credentials', {})
     remote = next((arg for arg in args[1:] if arg in credentials), None) if args[0] in ('fetch', 'push') else None
     if remote:
@@ -90,9 +96,30 @@ def git(path, *args, check=True):
     return result
 
 
-def validate_config(config):
-    if not isinstance(config, dict) or set(config) - {'repositories', 'interval', 'worker'}:
+def git(path, *args, check=True):
+    repo = getattr(GIT_CONTEXT, 'repo', None)
+    remote = next((arg for arg in args[1:] if repo and arg in repo['remotes']), None) if args and args[0] in ('fetch', 'push') else None
+    if repo and remote:
+        with transport.ssh_environment(control(), repo, remote) as ssh_env:
+            GIT_CONTEXT.ssh_env = ssh_env
+            try:
+                return _git(path, *args, check=check)
+            finally:
+                GIT_CONTEXT.ssh_env = {}
+    return _git(path, *args, check=check)
+
+
+def _validate_config(config):
+    if not isinstance(config, dict) or set(config) - {'repositories', 'interval', 'worker', 'public_url', 'worker_sets', 'profiles'}:
         raise ValueError('Invalid configuration fields')
+    public = config.get('public_url', '')
+    if not isinstance(public, str):
+        raise ValueError('Invalid public URL')
+    if public:
+        parsed = urlsplit(public)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.query or parsed.fragment or any(c.isspace() for c in public):
+            raise ValueError('Public URL requires HTTPS without credentials')
+        parsed.port
     interval = config.get('interval', 300)
     if type(interval) is not int or not 30 <= interval <= 86400:
         raise ValueError('Intervall muss zwischen 30 und 86400 Sekunden liegen')
@@ -113,7 +140,7 @@ def validate_config(config):
     names = set()
     claimed = set()
     for repo in repos:
-        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private'}:
+        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'worker_set', 'profile'}:
             raise ValueError('Invalid repository fields')
         name = repo.get('name', '')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', name) or name in names:
@@ -141,9 +168,11 @@ def validate_config(config):
         providers = repo.get('remote_providers', {})
         if not isinstance(providers, dict) or set(providers) - set(remotes) or any(not isinstance(x, str) for x in providers.values()):
             raise ValueError('Ungültige Provider-Zuordnung')
-        for option in ('create_missing', 'create_private'):
+        for option in ('create_missing', 'create_private', 'auto_webhooks'):
             if type(repo.get(option, option == 'create_private')) is not bool:
                 raise ValueError('Invalid automatic repository creation setting')
+        if repo.get('auto_webhooks') and (not public or any(not providers.get(remote) for remote in remotes)):
+            raise ValueError('Automatic webhooks require public URL and all provider mappings')
         if repo.get('create_missing'):
             if repo.get('source') not in remotes:
                 raise ValueError('Select the source remote before enabling automatic creation')
@@ -172,19 +201,56 @@ def validate_config(config):
     return config
 
 
-def load_config():
-    return validate_config(json.loads(CONFIG.read_text(encoding='utf-8')))
+SHARED_FIELDS = {'enabled', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'worker_set', 'force_confirmed', 'create_missing', 'create_private', 'auto_webhooks', 'webhook_secret_env'}
 
 
-def save_config(config):
+def resolve_config(config):
+    result = dict(config)
+    profiles = config.get('profiles', {})
+    result['repositories'] = []
+    for repo in config.get('repositories', []):
+        identifier = repo.get('profile', '')
+        if identifier and identifier not in profiles:
+            raise ValueError('Gemeinsames Profil nicht gefunden')
+        # Group policy is authoritative; individual mappings retain URLs, identity and providers.
+        result['repositories'].append(dict(repo, **profiles.get(identifier, {})))
+    return result
+
+
+def validate_config(config):
+    if not isinstance(config, dict):
+        raise ValueError('Configuration object required')
+    profiles, groups = config.get('profiles', {}), config.get('worker_sets', {})
+    if not isinstance(profiles, dict) or len(profiles) > 100 or not isinstance(groups, dict) or len(groups) > 16:
+        raise ValueError('Maximal 100 Profile und 16 Worker-Gruppen')
+    for name, profile in profiles.items():
+        if not isinstance(name, str) or not management.IDENTIFIER.fullmatch(name) or not isinstance(profile, dict) or set(profile) - SHARED_FIELDS:
+            raise ValueError('Ungueltiges gemeinsames Profil')
+    for name, limits in groups.items():
+        if not isinstance(name, str) or not management.IDENTIFIER.fullmatch(name) or name == 'default':
+            raise ValueError('Ungueltige Worker-Gruppe')
+        _validate_config({'repositories': [], 'worker': limits})
+    _validate_config(resolve_config(config))
+    for repo in resolve_config(config)['repositories']:
+        if repo.get('worker_set', 'default') != 'default' and repo['worker_set'] not in groups:
+            raise ValueError('Worker-Gruppe nicht gefunden')
+    return config
+
+
+def load_config(expand=True):
+    config = validate_config(json.loads(CONFIG.read_text(encoding='utf-8')))
+    return resolve_config(config) if expand else config
+
+
+def _save_config(config):
     validate_config(config)
     if not LOCK.acquire(blocking=False):
         return False
     temporary = None
     try:
-        if WORKER is not None and WORKER.active:
+        if MAINTENANCE or WORKER is not None and WORKER.active:
             return False
-        for repo in config['repositories']:
+        for repo in resolve_config(config)['repositories']:
             for remote, identifier in repo.get('remote_providers', {}).items():
                 provider = control().provider(identifier)
                 url = urlsplit(repo['remotes'][remote])
@@ -208,6 +274,14 @@ def save_config(config):
         LOCK.release()
 
 
+def save_config(config):
+    try:
+        with runtime.file_lock(DATA):
+            return _save_config(config)
+    except runtime.Busy:
+        return False
+
+
 @contextmanager
 def database():
     DATA.mkdir(parents=True, exist_ok=True)
@@ -220,13 +294,14 @@ def database():
         db.close()
 
 
-def synchronize(repo):
+def fetch_snapshots(repo, dry_run=False):
     path = DATA / repo['name']
     path.mkdir(parents=True, exist_ok=True)
     if not (path / 'HEAD').exists():
         git(path, 'init', '--bare')
     snapshots = {}
     created = []
+    missing = []
     remotes = list(repo['remotes'].items())
     if repo.get('create_missing'):
         if repo.get('source') not in repo['remotes']:
@@ -234,11 +309,17 @@ def synchronize(repo):
         # Fetch the source successfully before making any provider-side changes.
         remotes.sort(key=lambda item: item[0] != repo['source'])
     for remote, url in remotes:
+        original_url = url
+        url = transport.remote_url(control(), repo, remote) if repo.get('remote_providers', {}).get(remote) else url
         if repo.get('create_missing') and remote != repo['source']:
             identifier = repo.get('remote_providers', {}).get(remote)
             if not identifier:
                 raise ValueError('Automatic creation requires a target provider')
-            if control().ensure_repository(identifier, url, repo.get('create_private', True)):
+            if dry_run and not control().repository_exists(identifier, original_url):
+                snapshots[remote] = {}
+                missing.append(remote)
+                continue
+            if not dry_run and control().ensure_repository(identifier, original_url, repo.get('create_private', True)):
                 created.append(remote)
                 if hasattr(GIT_CONTEXT, 'created'):
                     GIT_CONTEXT.created.append(remote)
@@ -252,6 +333,15 @@ def synchronize(repo):
         refs = git(path, 'for-each-ref', '--format=%(refname) %(objectname)', f'refs/mesh/{remote}/').stdout
         prefix = f'refs/mesh/{remote}/'
         snapshots[remote] = {line.split()[0][len(prefix):]: line.split()[1] for line in refs.splitlines()}
+    return path, snapshots, created, missing
+
+
+def repository_tools():
+    return inspection.RepositoryTools(git, fetch_snapshots, DATA, redact_git_output)
+
+
+def synchronize(repo, dry_run=False):
+    path, snapshots, created, missing = fetch_snapshots(repo, dry_run)
     actions, conflicts, plan = [], [], []
     direction, policy = repo.get('direction', 'bidirectional'), repo.get('policy', 'ff-only')
     source = repo.get('source')
@@ -286,6 +376,11 @@ def synchronize(repo):
                 conflicts.append(ref + ' @ ' + remote)
                 continue
             plan.append((remote, ref, winner, old))
+    if dry_run:
+        return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing}
+    hooks = []
+    if repo.get('auto_webhooks'):
+        hooks = control().register_hooks(repo, load_config().get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''), refresh_secret=False)
     if conflicts and policy == 'reject':
         return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
     for remote, ref, winner, old in plan:
@@ -294,14 +389,14 @@ def synchronize(repo):
             args.append(f'--force-with-lease=refs/{ref}:{old or ""}')
         git(path, *args, remote, f'{winner}:refs/{ref}')
         actions.append(f'{remote}: {ref} -> {winner[:12]}')
-    return ('conflict' if conflicts else 'success'), {'updated': actions, 'conflicts': conflicts, 'created_repositories': created}
+    return ('conflict' if conflicts else 'success'), {'updated': actions, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks}
 
 
 def prepare_credentials(repo):
     credentials = {}
     for remote, identifier in repo.get('remote_providers', {}).items():
         provider = control().provider(identifier, reveal=True)
-        parsed = urlsplit(repo['remotes'][remote])
+        parsed = urlsplit(transport.remote_url(control(), repo, remote))
         if parsed.scheme == 'https':
             if parsed.netloc != urlsplit(provider['url']).netloc:
                 raise ValueError('Remote-URL und Provider stimmen nicht überein')
@@ -312,6 +407,7 @@ def prepare_credentials(repo):
 
 
 def execute_profile(repo):
+    GIT_CONTEXT.repo = repo
     GIT_CONTEXT.credentials = prepare_credentials(repo)
     GIT_CONTEXT.created = []
     try:
@@ -329,12 +425,56 @@ def execute_profile(repo):
     finally:
         GIT_CONTEXT.credentials = {}
         GIT_CONTEXT.created = []
+        GIT_CONTEXT.repo = None
 
 
 
 def run_all(name=None, origin='manual'):
     names = [r['name'] for r in load_config()['repositories'] if r.get('enabled', True) and (not name or r['name'] == name)]
     return control().enqueue(names, origin)
+
+
+def _repository_action(action, body, actor):
+    global MAINTENANCE
+    with LOCK:
+        if MAINTENANCE or WORKER and WORKER.active:
+            raise inspection.StaleState('Aktive Operation zuerst abschliessen lassen')
+        MAINTENANCE = True
+    try:
+        config = load_config()
+        repo = next((r for r in config['repositories'] if r['name'] == body.get('profile')), None)
+        if repo is None:
+            raise ValueError('Profil nicht gefunden')
+        GIT_CONTEXT.repo = repo
+        GIT_CONTEXT.credentials = prepare_credentials(repo)
+        tools = repository_tools()
+        if action == 'preview':
+            status, result = synchronize(repo, dry_run=True)
+            return dict(result, status=status)
+        if action == 'refs':
+            return tools.inventory(repo)
+        if action == 'compare':
+            return tools.compare(repo, body)
+        if action == 'refs/change':
+            result = tools.change_ref(repo, body)
+        elif action == 'merge':
+            result = tools.merge(repo, body)
+        elif action == 'webhooks/register':
+            result = {'webhooks': control().register_hooks(repo, config.get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''))}
+        else:
+            raise ValueError('Unknown operation')
+        control().record_action(repo['name'], action, result, actor['name'], 'conflict' if result.get('status') in ('conflict', 'unrelated') else 'success')
+        return result
+    finally:
+        GIT_CONTEXT.credentials = {}
+        GIT_CONTEXT.repo = None
+        with LOCK:
+            MAINTENANCE = False
+
+
+def repository_action(action, body, actor):
+    with runtime.file_lock(DATA):
+        return _repository_action(action, body, actor)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -393,7 +533,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/me':
             return self.reply(200, actor)
         if path == '/api/settings':
-            return self.reply(200, load_config())
+            return self.reply(200, load_config(expand=False))
+        if path == '/api/transport':
+            return self.reply(200, transport.settings(control(), parse_qs(urlsplit(self.path).query).get('id', [''])[0]))
         if path == '/api/providers':
             return self.reply(200, {'providers': control().providers()})
         if path == '/api/users':
@@ -411,8 +553,7 @@ class Handler(BaseHTTPRequestHandler):
             with database() as db:
                 rows = db.execute('SELECT time, repository, status, details FROM runs ORDER BY id DESC LIMIT 100').fetchall()
             config = load_config()
-            worker = WORKER.status() if WORKER else {'mode': store.mode(), 'active': {}, 'heartbeat': None,
-                                                     'notice': '', 'resources': management.resources(DATA)}
+            worker = WORKER.status() if WORKER else runtime.status(store)
             return self.reply(200, {'running': bool(worker['active']), 'actor': actor, 'worker': worker,
                 'repositories': [{'name': r['name'], 'remotes': list(r['remotes']), 'enabled': r.get('enabled', True),
                                   'direction': r.get('direction', 'bidirectional'), 'source': r.get('source'),
@@ -426,6 +567,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self.post()
+        except (inspection.StaleState, runtime.Busy) as exc:
+            self.reply(409, {'error': str(exc)})
+        except GitFailure as exc:
+            self.reply(502, dict(exc.details, error=exc.details['message']))
         except (ValueError, TypeError, KeyError, UnicodeError, AttributeError) as exc:
             # Validation errors contain no credential values.
             self.reply(400, {'error': str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else 'Ungültige Anfrage'})
@@ -456,29 +601,42 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/logout':
             store.logout(self.token())
             return self.reply(200, {'status': 'logged-out'})
+        if self.path in ('/api/preview', '/api/refs', '/api/compare'):
+            return self.reply(200, repository_action(self.path[5:], body, actor))
         if actor['role'] != 'admin':
             return self.reply(403, {'error': 'Lesebenutzer dürfen keine Änderungen vornehmen'})
+        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register'):
+            return self.reply(200, repository_action(self.path[5:], body, actor))
         if self.path == '/api/settings':
             if not save_config(body):
                 return self.reply(409, {'error': 'Synchronisierung läuft. Bitte anschließend erneut speichern.'})
             return self.reply(200, {'status': 'saved'})
         if self.path == '/api/sync':
+            if body.get('shared_profile'):
+                config = load_config()
+                if body['shared_profile'] not in config.get('profiles', {}):
+                    raise ValueError('Gemeinsames Profil nicht gefunden')
+                identifiers = store.enqueue([r['name'] for r in config['repositories'] if r.get('profile') == body['shared_profile'] and r.get('enabled', True)], 'manual:' + actor['name'])
+                return self.reply(202, {'jobs': identifiers})
             profile = body.get('profile')
             if profile is not None and profile not in [r['name'] for r in load_config()['repositories']]:
                 raise ValueError('Profil nicht gefunden')
             identifiers = run_all(profile, 'manual:' + actor['name'])
             return self.reply(202, {'status': 'queued; duplicate requests are coalesced', 'jobs': identifiers})
         if self.path == '/api/providers':
-            with LOCK:
-                if WORKER and WORKER.active:
+            with LOCK, runtime.file_lock(DATA):
+                if MAINTENANCE or WORKER and WORKER.active:
                     return self.reply(409, {'error': 'Aktive Syncs zuerst beenden lassen'})
                 identifier = store.save_provider(body)
             return self.reply(200, {'id': identifier})
+        if self.path == '/api/transport':
+            with LOCK, runtime.file_lock(DATA):
+                return self.reply(200, transport.save(store, body))
         if self.path == '/api/providers/test':
             return self.reply(200, store.test_provider(body.get('id')))
         if self.path == '/api/providers/delete':
-            with LOCK:
-                if WORKER and WORKER.active:
+            with LOCK, runtime.file_lock(DATA):
+                if MAINTENANCE or WORKER and WORKER.active:
                     return self.reply(409, {'error': 'Aktive Syncs zuerst beenden lassen'})
                 store.delete_provider(body.get('id'), load_config())
             return self.reply(200, {'status': 'deleted'})
@@ -490,8 +648,10 @@ class Handler(BaseHTTPRequestHandler):
             action = body.get('action')
             if action not in modes:
                 raise ValueError('Ungültige Worker-Aktion')
+            if body.get('group') and body['group'] not in {'default', *load_config().get('worker_sets', {})}:
+                raise ValueError('Worker-Gruppe nicht gefunden')
             with LOCK:
-                mode = store.mode(modes[action])
+                mode = store.group_mode(body['group'], modes[action]) if body.get('group') else store.mode(modes[action])
             return self.reply(200, {'mode': mode})
         if self.path == '/api/jobs/cancel':
             with store.db() as db:
@@ -514,7 +674,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
                 header = 'X-Hub-Signature-256' if provider == 'github' else 'X-Forgejo-Signature'
-                valid = hmac.compare_digest(self.headers.get(header, '').encode(),
+                valid = hmac.compare_digest((self.headers.get(header, '') or (self.headers.get('X-Gitea-Signature', '') if provider == 'forgejo' else '')).encode(),
                                            (('sha256=' if provider == 'github' else '') + digest).encode())
         if not valid:
             return self.reply(403, {'error': 'Invalid webhook signature'})
@@ -523,20 +683,35 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    if '--job' in sys.argv:
+        runtime.run_child(sys.modules[__name__], int(sys.argv[sys.argv.index('--job') + 1]))
+        raise SystemExit(0)
+    role = os.environ.get('GITMESH_ROLE', 'combined')
+    if role not in ('combined', 'web', 'worker'):
+        raise SystemExit('GITMESH_ROLE must be web, worker or combined')
     if len(os.environ.get('GITMESH_ADMIN_TOKEN', '')) < 32:
         raise SystemExit('Set GITMESH_ADMIN_TOKEN to a random secret of at least 32 characters')
-    instance = control().acquire_instance()
-    if not CONFIG.exists():
-        save_config({'interval': 300, 'repositories': []})
+    for attempt in range(30):
+        if CONFIG.exists():
+            break
+        if save_config({'interval': 300, 'repositories': []}):
+            break
+        time.sleep(0.1)
     load_config()
     with database():
         pass
-    WORKER = management.Worker(control(), load_config, execute_profile, LOCK)
-    thread = threading.Thread(target=WORKER.loop, daemon=True)
+    if role == 'worker':
+        runtime.supervisor(sys.modules[__name__])
+        raise SystemExit(0)
+    instance = runtime.file_lock(DATA, 'web-instance')
+    instance.__enter__()
+    # Combined mode retains the single-container development entry point, with a separate supervisor process.
+    worker_process = None
+    if role == 'combined':
+        worker_process = subprocess.Popen([sys.executable, str(Path(__file__).resolve())], env=dict(os.environ, GITMESH_ROLE='worker'),
+            **({'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}))
     server = ThreadingHTTPServer((os.environ.get('GITMESH_HOST', '0.0.0.0'), int(os.environ.get('GITMESH_PORT', '8080'))), Handler)
-    thread.start()
     def shutdown(*_):
-        WORKER.stop_event.set()
         threading.Thread(target=server.shutdown, daemon=True).start()
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
@@ -544,6 +719,7 @@ if __name__ == '__main__':
         server.serve_forever()
     finally:
         server.server_close()
-        thread.join(timeout=5)
-        WORKER.close()
-        instance.close()
+        if worker_process:
+            worker_process.terminate()
+            worker_process.wait()
+        instance.__exit__(None, None, None)

@@ -157,6 +157,7 @@ class ProvisioningOrderTests(SyncFixture):
                 events.append(('fetch', args[3] if args[1] == '--prune' else args[1]))
             return self.command(path, *args, check=check)
         store = MagicMock()
+        store.db.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = None
         store.ensure_repository.side_effect = lambda identifier, url, private: events.append(('create', identifier)) or True
         with patch.object(mesh, 'git', command), patch.object(mesh, 'control', return_value=store):
             status, details = mesh.synchronize(self.repo)

@@ -72,6 +72,9 @@ class Control:
               url TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
               token TEXT NOT NULL DEFAULT '', health TEXT NOT NULL DEFAULT 'untested',
               checked REAL);
+            CREATE TABLE IF NOT EXISTS provider_transport (id TEXT PRIMARY KEY, details TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat REAL, details TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS worker_groups (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS users (
               name TEXT PRIMARY KEY, role TEXT NOT NULL, password TEXT NOT NULL,
               enabled INTEGER NOT NULL DEFAULT 1);
@@ -103,7 +106,7 @@ class Control:
                 keyfile = self.data / 'vault.key'
                 if not keyfile.exists():
                     with self.db() as db:
-                        if db.execute("SELECT 1 FROM providers WHERE token!='' LIMIT 1").fetchone():
+                        if db.execute("SELECT 1 FROM providers WHERE token!='' LIMIT 1").fetchone() or any(json.loads(row['details']).get('key') for row in db.execute('SELECT details FROM provider_transport')):
                             raise ProviderError('Vault-Schlüssel fehlt. Backup wiederherstellen.')
                     descriptor = os.open(keyfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                     with os.fdopen(descriptor, 'wb') as handle:
@@ -148,6 +151,10 @@ class Control:
             raise ValueError('Ungültige Zugangsdaten')
         with self.db() as db:
             previous = db.execute('SELECT * FROM providers WHERE id=?', (identifier,)).fetchone()
+        if previous and (previous['url'] != url or previous['kind'] != kind):
+            import transport
+            if transport.settings(self, identifier)['has_key']:
+                raise ValueError('Vor Hostwechsel gespeicherten SSH-Schluessel entfernen')
         encrypted = self.cipher().encrypt(token.encode()).decode() if token else (previous['token'] if previous else '')
         if previous and (previous['url'] != url or previous['kind'] != kind) and previous['token'] and not token and not body.get('clear_token'):
             raise ValueError('Bei Host- oder Typwechsel Token neu eingeben oder entfernen')
@@ -165,6 +172,7 @@ class Control:
             raise ValueError('Provider wird noch von einem Profil verwendet')
         with self.db() as db:
             db.execute('DELETE FROM providers WHERE id=?', (identifier,))
+            db.execute('DELETE FROM provider_transport WHERE id=?', (identifier,))
 
     def api(self, provider, path, query=None, *, method='GET', body=None):
         url = provider['url']
@@ -187,7 +195,7 @@ class Control:
                 payload = response.read(4 * 1024 * 1024 + 1)
                 if len(payload) > 4 * 1024 * 1024:
                     raise ProviderError('Provider-Antwort zu groß')
-                return json.loads(payload)
+                return json.loads(payload) if payload else {}
         except HTTPError as exc:
             exc.close()
             raise ProviderError('Provider-API antwortet mit HTTP ' + str(exc.code), exc.code) from None
@@ -253,6 +261,77 @@ class Control:
                     pass
             raise
         return True
+
+    def repository_exists(self, identifier, clone_url):
+        provider = self.provider(identifier, reveal=True)
+        owner, name = self.repository_path(provider, clone_url)
+        path = '/projects/' + quote(owner + '/' + name, safe='') if provider['kind'] == 'gitlab' else '/repos/' + quote(owner, safe='') + '/' + quote(name, safe='')
+        try:
+            self.api(provider, path)
+            return True
+        except ProviderError as exc:
+            if exc.status == 404:
+                return False
+            raise
+
+    def register_hooks(self, repo, public_url, secret, refresh_secret=True):
+        parsed = urlsplit(public_url)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.query or parsed.fragment:
+            raise ValueError('Oeffentliche GitMesh-URL muss HTTPS ohne Zugangsdaten sein')
+        if not secret:
+            raise ValueError('Webhook-Secret-Umgebungsvariable ist nicht gesetzt')
+        # Validate all mappings before the first external write.
+        targets = []
+        for remote, url in repo['remotes'].items():
+            identifier = repo.get('remote_providers', {}).get(remote)
+            if not identifier:
+                raise ValueError('Webhook-Einrichtung benoetigt fuer jeden Remote einen Provider')
+            provider = self.provider(identifier, reveal=True)
+            if not provider['token']:
+                raise ValueError('Webhook-Einrichtung benoetigt einen API-Token')
+            owner, name = self.repository_path(provider, url)
+            endpoint = '/projects/' + quote(owner + '/' + name, safe='') + '/hooks' if provider['kind'] == 'gitlab' else '/repos/' + quote(owner, safe='') + '/' + quote(name, safe='') + '/hooks'
+            targets.append((remote, provider, endpoint))
+        results = []
+        for remote, provider, endpoint in targets:
+            callback = public_url.rstrip('/') + '/hooks/' + provider['kind'] + '/' + repo['name']
+            existing = None
+            for page in range(1, 21):
+                hooks = self.api(provider, endpoint, {'page': page, 'per_page': 50, 'limit': 50})
+                if not isinstance(hooks, list):
+                    raise ProviderError('Provider lieferte keine Webhook-Liste')
+                existing = next((hook for hook in hooks if (hook.get('url') if provider['kind'] == 'gitlab' else hook.get('config', {}).get('url')) == callback), None)
+                if existing or len(hooks) < 50:
+                    break
+            else:
+                raise ProviderError('Zu viele Webhooks; kein neuer Hook wurde angelegt')
+            if existing and not refresh_secret:
+                results.append({'remote': remote, 'status': 'exists', 'url': callback})
+                continue
+            if provider['kind'] == 'gitlab':
+                body = {'url': callback, 'token': secret, 'push_events': True, 'tag_push_events': True,
+                        'enable_ssl_verification': True}
+                method = 'PUT' if existing else 'POST'
+            else:
+                body = {'active': True, 'events': ['push'], 'config': {'url': callback, 'content_type': 'json',
+                        'secret': secret, 'insecure_ssl': '0'}}
+                if not existing:
+                    body.update({'name': 'web'} if provider['kind'] == 'github' else {'type': 'gitea'})
+                method = 'PATCH' if existing else 'POST'
+            if existing:
+                identifier = existing.get('id')
+                if type(identifier) is not int:
+                    raise ProviderError('Ungueltige Webhook-ID')
+                endpoint += '/' + str(identifier)
+            self.api(provider, endpoint, method=method, body=body)
+            results.append({'remote': remote, 'status': 'updated' if existing else 'created', 'url': callback})
+        return results
+
+    def record_action(self, profile, action, details, actor, status='success'):
+        now = time.time()
+        with self.db() as db:
+            db.execute("INSERT INTO jobs(profile,origin,status,requested,started,finished,attempts,details) VALUES(?,?,?,?,?,?,1,?)",
+                       (profile, action + ':' + actor, status, now, now, now, json.dumps(details)))
 
     def test_provider(self, identifier):
         provider = self.provider(identifier, reveal=True)
@@ -401,10 +480,26 @@ class Control:
         with self.db() as db:
             return [dict(r, details=json.loads(r['details'])) for r in db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 100')]
 
-    def claim(self):
+    def group_mode(self, name, value=None):
+        if not isinstance(name, str) or not IDENTIFIER.fullmatch(name):
+            raise ValueError('Invalid worker group')
+        with self.db() as db:
+            db.execute("INSERT OR IGNORE INTO worker_groups VALUES(?,'running')", (name,))
+            if value is not None:
+                if value not in ('running', 'paused', 'stopped'):
+                    raise ValueError('Invalid worker mode')
+                db.execute('UPDATE worker_groups SET mode=? WHERE name=?', (value, name))
+            return db.execute('SELECT mode FROM worker_groups WHERE name=?', (name,)).fetchone()[0]
+
+    def claim(self, names=None):
         with self.db() as db:
             db.execute('BEGIN IMMEDIATE')
-            row = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+            if names is not None:
+                if not names:
+                    return None
+                row = db.execute("SELECT * FROM jobs WHERE status='queued' AND profile IN (" + ','.join('?' for _ in names) + ') ORDER BY id LIMIT 1', names).fetchone()
+            else:
+                row = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
             if not row:
                 return None
             db.execute("UPDATE jobs SET status='running',started=? WHERE id=?", (time.time(), row['id']))
@@ -455,8 +550,9 @@ def resources(data):
 
 class Worker:
     """One supervisor with bounded parallel jobs. Running tasks finish on pause/stop."""
-    def __init__(self, control, loader, execute, gate):
+    def __init__(self, control, loader, execute, gate, blocked=None):
         self.control, self.loader, self.execute, self.gate = control, loader, execute, gate
+        self.blocked = blocked or (lambda: False)
         self.active = {}
         self.stop_event = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='gitmesh')
@@ -469,6 +565,9 @@ class Worker:
     def tick(self):
         self.heartbeat = time.time()
         with self.gate:
+            if self.blocked():
+                self.notice = 'Manuelle Repository-Operation laeuft'
+                return
             if self.control.mode() != 'running':
                 return
             config = self.loader()

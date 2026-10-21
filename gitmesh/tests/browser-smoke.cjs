@@ -27,7 +27,7 @@ async function main() {
     cwd: root, windowsHide: true,
     env: {...process.env, GITMESH_ADMIN_TOKEN: token, GITMESH_DATA: data,
       GITMESH_CONFIG: path.join(data, 'config.json'), GITMESH_PORT: String(port),
-      GITMESH_HOST: '127.0.0.1', PYTHONDONTWRITEBYTECODE: '1'},
+      GITMESH_HOST: '127.0.0.1', GITMESH_ROLE: 'web', PYTHONDONTWRITEBYTECODE: '1'},
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let logs = '', browser;
@@ -134,6 +134,49 @@ async function main() {
     await page.locator('#worker-form button').click();
     assert.equal((await workerSaved).status(), 200);
     assert.equal((await api('/api/settings')).worker.parallelism, 3);
+    await page.locator('[data-page=tools]').click();
+    assert.equal(await page.locator('#tool-profile').inputValue(), settings.repositories[0].name);
+    await page.route('**/api/preview', route => route.fulfill({json: {status: 'success', plan: [{remote: 'target', ref: 'heads/main'}], conflicts: []}}));
+    await page.locator('#tool-preview').click();
+    await page.locator('#tool-output').filter({hasText: 'heads/main'}).waitFor();
+    await page.route('**/api/compare', route => route.fulfill({json: {left_oid: 'a'.repeat(40), right_oid: 'b'.repeat(40), left_only: 1, right_only: 1, left_commits: [{oid: 'a'.repeat(40), subject: 'Left change', author: 'Test'}], right_commits: [{oid: 'b'.repeat(40), subject: 'Right change', author: 'Test'}], stat: 'content.txt', patch: '+new text'}}));
+    await page.locator('#tool-left').fill('source'); await page.locator('#tool-right').fill('target');
+    await page.locator('#tool-compare button').first().click();
+    await page.locator('#tool-comparison').filter({hasText: 'Left change'}).waitFor();
+    await page.locator('#public-url').fill('https://mesh.example.invalid');
+    await page.locator('#hook-settings button').first().click();
+    await page.getByRole('status').filter({hasText: 'Oeffentliche Adresse gespeichert.'}).waitFor();
+    assert.equal((await api('/api/settings')).public_url, 'https://mesh.example.invalid');
+    await page.locator('[data-page=groups]').click();
+    await page.locator('#group-name').fill('team');
+    await page.locator('#group-parallelism').fill('1');
+    await page.locator('#group-form button').click();
+    await page.locator('#group-list h2').filter({hasText: /^team$/}).waitFor();
+    assert.equal((await api('/api/settings')).worker_sets.team.parallelism, 1);
+    await page.locator('#shared-name').fill('shared-test');
+    await page.locator('#shared-direction').selectOption('one-way');
+    await page.locator('#shared-source').fill('source');
+    await page.locator('#shared-branches').fill('main, release/*');
+    await page.locator('#shared-interval').fill('0');
+    await page.locator('#shared-worker').fill('team');
+    await page.locator('#shared-enabled').uncheck();
+    await page.locator('#shared-form button').first().click();
+    await page.locator('#shared-list h2').filter({hasText: /^shared-test$/}).waitFor();
+    await page.locator('[data-page=profiles]').click();
+    await profile.locator('.repo-shared').selectOption('shared-test');
+    assert.equal(await profile.locator('.repo-branches').isDisabled(), true);
+    const sharedSaved = page.waitForResponse(r => r.url().endsWith('/api/settings') && r.request().method() === 'POST');
+    await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
+    assert.equal((await sharedSaved).status(), 200);
+    assert.equal((await api('/api/settings')).repositories[0].profile, 'shared-test');
+    await page.locator('[data-page=providers]').click();
+    await page.locator('#transport-provider').selectOption(target.id);
+    await page.locator('#transport-load').click();
+    await page.locator('#transport-info').filter({hasText: 'Kein gespeicherter Schluessel'}).waitFor();
+    await page.locator('#transport-protocol').selectOption('https');
+    await page.locator('#transport-form button').last().click();
+    await page.getByRole('status').filter({hasText: 'Transport gespeichert.'}).waitFor();
+    assert.equal((await api('/api/transport?id=' + target.id)).protocol, 'https');
     await page.locator('[data-page=users]').click();
     for (const [name, role] of [['test-admin', 'admin'], ['test-reader', 'readonly']]) {
       await page.locator('#user-name').fill(name);
@@ -150,10 +193,16 @@ async function main() {
     await page.locator('#login button').click();
     await page.locator('#workspace').waitFor({state: 'visible'});
     assert.equal(await page.locator('[data-page=users]').isVisible(), false);
+    assert.equal(await page.locator('[data-page=groups]').isVisible(), false);
+    await page.locator('[data-page=providers]').click();
+    assert.equal(await page.locator('#transport-form').isVisible(), false);
     await page.locator('[data-page=providers]').click();
     assert.equal(await page.locator('#provider-form').isVisible(), false);
     await page.locator('[data-page=profiles]').click();
     assert.equal(await page.locator('#settings-form').isVisible(), false);
+    await page.locator('[data-page=tools]').click();
+    assert.equal(await page.locator('#tool-merge').isVisible(), false);
+    assert.equal(await page.locator('#tool-create').isVisible(), false);
     await page.locator('#logout').click();
     await page.locator('#auth').waitFor({state: 'visible'});
     await page.locator('#username').fill('test-admin');
@@ -169,7 +218,7 @@ async function main() {
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'Mobile page must fit viewport');
     assert.deepEqual(errors, [], 'Browser must have no uncaught JavaScript errors');
-    console.log('Browser smoke: provider CRUD, discovery drafts, profile persistence, worker controls, users, roles, mobile layout: OK');
+    console.log('Browser smoke: provider CRUD, discovery drafts, profile persistence, worker controls, preview, comparison, webhook settings, shared profiles, worker groups, SSH transport settings, users, roles, mobile layout: OK');
   } finally {
     if (browser) await browser.close();
     if (child.exitCode === null) { const exit = once(child, 'exit'); child.kill(); await exit; }
