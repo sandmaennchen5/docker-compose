@@ -41,9 +41,17 @@ function applyRole() {
   document.querySelectorAll('[data-admin]').forEach(n => { n.hidden = !admin(); });
   el('identity').textContent = actor.name + ' · ' + (admin() ? 'Administrator' : 'Nur lesen');
 }
+function resetProviderForm() {
+  el('provider-form').reset();
+  // Hidden input values also change their default value; reset() alone retains the edit ID.
+  el('provider-id').value = '';
+  el('provider-form-title').textContent = 'Provider anlegen';
+  el('provider-save').textContent = 'Provider hinzufügen';
+}
 function clearSession() {
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
-  for (const id of ['provider-form', 'user-form', 'login', 'bootstrap']) el(id).reset();
+  for (const id of ['user-form', 'login', 'bootstrap']) el(id).reset();
+  resetProviderForm();
   el('workspace').hidden = true; el('auth').hidden = false; el('logout').hidden = true; el('identity').textContent = '';
   for (const id of ['editors', 'repos', 'recent', 'jobs', 'provider-list', 'user-list', 'discovery-results']) el(id).replaceChildren();
 }
@@ -141,6 +149,8 @@ async function loadProviders() {
     const card = node('article', '', 'card ' + p.health);
     card.append(node('h2', p.name), node('p', p.kind + ' · ' + p.url), node('small', 'Verbindung: ' + p.health + ' · ' + date(p.checked)), node('p', p.has_token ? 'Token gespeichert' : 'Kein Token'));
     if (admin()) card.append(button('Bearbeiten', () => {
+      el('provider-form-title').textContent = 'Provider bearbeiten: ' + p.name;
+      el('provider-save').textContent = 'Änderungen speichern';
       el('provider-id').value = p.id; el('provider-name').value = p.name; el('provider-kind').value = p.kind;
       el('provider-url').value = p.url; el('provider-username').value = p.username; el('provider-token').value = ''; el('provider-clear').checked = false;
       el('provider-form').scrollIntoView({behavior: 'smooth'});
@@ -261,13 +271,13 @@ el('worker-form').addEventListener('submit', async e => {
     message('Worker-Einstellungen gespeichert.'); await refresh();
   } catch (error) { showError(error); }
 });
-el('provider-new').addEventListener('click', () => el('provider-form').reset());
+el('provider-new').addEventListener('click', resetProviderForm);
 el('provider-form').addEventListener('submit', async e => {
   e.preventDefault();
   try {
     await request('/api/providers', 'POST', {id: el('provider-id').value || undefined, name: el('provider-name').value.trim(), kind: el('provider-kind').value,
       url: el('provider-url').value.trim(), username: el('provider-username').value.trim(), token: el('provider-token').value, clear_token: el('provider-clear').checked});
-    el('provider-form').reset(); await loadProviders(); message('Provider gespeichert.');
+    resetProviderForm(); await loadProviders(); message('Provider gespeichert.');
   } catch (error) { el('provider-token').value = ''; showError(error); }
 });
 el('user-form').addEventListener('submit', async e => {

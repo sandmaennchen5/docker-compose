@@ -69,6 +69,31 @@ async function main() {
     assert.equal(providers.length, 2);
     const source = providers.find(p => p.name === 'Source'), target = providers.find(p => p.name === 'Target');
     assert.ok(!JSON.stringify(providers).includes('fake-token'));
+    // Editing assigns the hidden ID. A subsequent create must not reuse it.
+    const sourceCard = page.locator('#provider-list article').filter({has: page.getByRole('heading', {name: 'Source', exact: true})});
+    await sourceCard.getByRole('button', {name: 'Bearbeiten', exact: true}).click();
+    assert.equal(await page.locator('#provider-id').inputValue(), source.id);
+    await page.locator('#provider-username').fill('updated-user');
+    const edited = page.waitForResponse(r => r.url().endsWith('/api/providers') && r.request().method() === 'POST');
+    await page.locator('#provider-form button').first().click();
+    assert.equal((await edited).status(), 200);
+    await page.waitForFunction(() => document.getElementById('provider-name').value === '');
+    await page.locator('#provider-name').fill('Third');
+    await page.locator('#provider-kind').selectOption('forgejo');
+    await page.locator('#provider-url').fill('https://third.example.invalid');
+    const created = page.waitForResponse(r => r.url().endsWith('/api/providers') && r.request().method() === 'POST');
+    await page.locator('#provider-form button').first().click();
+    assert.equal((await created).status(), 200);
+    await page.waitForFunction(() => document.getElementById('provider-name').value === '');
+    const afterEdit = (await api('/api/providers')).providers;
+    assert.equal(afterEdit.length, 3, 'Adding after editing must create another provider');
+    assert.equal(afterEdit.find(p => p.id === source.id).name, 'Source');
+    assert.equal(afterEdit.find(p => p.id === source.id).username, 'updated-user');
+    assert.equal(afterEdit.find(p => p.id === source.id).has_token, true);
+    await page.locator('#provider-list article').filter({has: page.getByRole('heading', {name: 'Target', exact: true})}).getByRole('button', {name: 'Bearbeiten', exact: true}).click();
+    await page.locator('#provider-new').click();
+    assert.equal(await page.locator('#provider-id').inputValue(), '', 'New provider must clear the edit ID');
+
     await page.route('**/api/discover?*', route => route.fulfill({json: {
       repositories: [{full_name: 'team/project', clone_url: 'https://source.example.invalid/team/project.git', private: true}],
       next_page: null, page: 1
