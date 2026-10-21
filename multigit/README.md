@@ -1,55 +1,111 @@
-# MultiGit mit Webinterface (Selbstbau)
+# MultiGit mit vollständigem Webinterface
 
-Der mehrstufige Docker-Build kompiliert [TIVerse/MultiGit](https://github.com/TIVerse/multigit) aus dem Quellcode. Eine eigene schlanke Python-Weboberfläche ruft die CLI auf: Status, Remotes anzeigen, initialisieren, Sync-Vorschau, Sync, Push, Pull und Diagnose. Keine zusätzlichen Python-Pakete erforderlich.
+Das Image kompiliert [TIVerse/MultiGit](https://github.com/TIVerse/multigit) und ergänzt ein deutsches Webinterface. Häufige Aufgaben haben Statusansichten und Formulare; sämtliche nativen Befehle einschließlich interaktiver Menüs sind über einen Funktionskatalog mit eingebettetem Terminal erreichbar.
 
-## Starten
+## Start mit einem GitHub-Image
 
-```sh
+Im Verzeichnis multigit:
+
+~~~sh
 cp .env.example .env
-# In .env ein eigenes starkes WEB_PASSWORD setzen.
+# WEB_PASSWORD auf ein eigenes starkes Passwort setzen.
 mkdir -p repos
-git clone https://github.com/DEIN-NAME/DEIN-REPO.git repos/mein-repo
-docker compose up -d --build
-```
-
-Webinterface: http://localhost:8088 – Anmeldung mit `WEB_USER` (Standard `admin`) und dem gesetzten Passwort. Der erste Build kompiliert Rust und kann mehrere Minuten dauern. Für reproduzierbare Builds `MULTIGIT_REF` in `.env` auf einen geprüften Commit oder Tag setzen; Standard ist `master`.
-
-Bestehende Repositories lassen sich alternativ einzeln unter `/repos/<name>` als beschreibbare Bind-Mounts einbinden. Der Container läuft mit UID/GID 1000; auf Linux müssen die eingebundenen Verzeichnisse für diese UID beschreibbar sein. Git-Worktrees mit externem `.git`-Verweis benötigen zusätzlich ihre referenzierten Pfade im Container.
-
-## Einrichten und Zugangsdaten
-
-Im Webinterface das Repository wählen und **Einstellungen** öffnen. Branch für Push/Sync, Pull-Quelle und maximale Parallelität lassen sich dort speichern. Ein leerer Branch verwendet eine vorhandene globale Vorgabe oder den aktuellen Branch. Pull verwendet immer den aktuell ausgecheckten Branch. Die Log-Stufe wird als MultiGit-Vorgabe gespeichert; ihre Wirkung hängt vom CLI-Befehl ab.
-
-Unter **Remotes** können Git-Ziele mit HTTPS-/SSH-URL, Anbieter, Benutzername und optionaler Instanz-URL hinzugefügt und bearbeitet werden. **Für MultiGit aktivieren** steuert die Teilnahme an Push/Sync; ein deaktiviertes Ziel bleibt in Git erhalten. Änderungen lösen keinen Netzwerkzugriff, Push oder Sync aus. Die Pull-Quelle wird unabhängig davon ausdrücklich gewählt.
-
-Die Oberfläche speichert die Repository-Konfiguration in `.multigit/config.toml` und legt vor Änderungen eine `config.toml.bak` an. Vorhandene Konfigurationsabschnitte bleiben erhalten; TOML-Kommentare werden beim Speichern entfernt. Die lokale Git-Ausschlussdatei ignoriert `/.multigit/`, damit unversionierte Einstellungen keinen Sync blockieren. Bereits versionierte Konfigurationsdateien müssen weiterhin wie normale Änderungen committet werden. Die Web-Einstellungen benötigen ein normales Repository mit seiner Git-Verwaltung innerhalb des Repository-Verzeichnisses; externe Git-Verwaltung und Worktrees werden beim Speichern abgelehnt.
-
-Für private Ziele vorhandene SSH-Schlüssel, SSH-Konfiguration und verifizierte `known_hosts` gezielt unter `/data/.ssh` einbinden. Zugangsdaten werden nicht über diese Oberfläche gespeichert; vorhandene MultiGit-/Git-Zugangsdaten können weiterverwendet werden. Tokens in Remote-URLs und unsichere lokale Git-Transportprotokolle werden abgelehnt. Im Container steht kein Desktop-Keyring zur Verfügung.
-
-Webaktionen verwenden feste Argumente ohne Shell, laufen einzeln und haben ein Zeitlimit von 120 Sekunden. Die Ausgabe zeigt CLI-Fehler und Exit-Code. Bei einem Timeout Repository-Status prüfen, bevor erneut synchronisiert wird. Die Vorschau vor einem Sync nutzen; Push/Pull/Sync können lokale oder entfernte Repositories ändern. Konfliktauflösung erfolgt über die CLI.
-
-## Betrieb
-
-Der Port bindet standardmäßig nur an localhost. Für Zugriff im LAN `BIND_ADDRESS=0.0.0.0` setzen. Auf dem NAS muss ein eigener Host-Port immer auf **Container-Port 8080** zeigen, beispielsweise `55567:8080` mit Zugriff über `http://NAS-IP:55567`; bei Zugriff über das Netzwerk HTTPS über einen Reverse Proxy bereitstellen, da HTTP-Basic-Anmeldung selbst nicht verschlüsselt ist.
-
-```sh
-docker compose logs -f
-docker compose build --pull --no-cache
-docker compose up -d
-docker compose down
-```
-
-`docker compose down` erhält Daten und Repositories. Es gibt keinen automatischen Sync; Änderungen werden über die Buttons ausgelöst.
-
-## Image von GitHub verwenden
-
-Der Workflow `.github/workflows/multigit-image.yml` testet die Webanwendung und baut das Image für `linux/amd64` und `linux/arm64`. Bei Änderungen an MultiGit auf `main`, bei Tags `multigit-v*` und beim manuellen Start veröffentlicht er nach GHCR. Pull Requests werden nur gebaut. Der aktuelle Upstream-Commit wird vor jedem Build aufgelöst und als Build-Argument verwendet.
-
-Image: `ghcr.io/sandmaennchen5/multigit:latest` (nach erfolgreichem Workflow). Zusätzlich entstehen SHA-Tags und bei Release-Tags beispielsweise `v1.0.0`. Für die Veröffentlichung nutzt GitHub den integrierten `GITHUB_TOKEN`; zusätzliche Registry-Secrets sind nicht nötig.
-
-```sh
 docker compose pull
 docker compose up -d --no-build
-```
+~~~
 
-Für einen manuellen Build auf GitHub unter **Actions → Build MultiGit image → Run workflow** starten. Falls das GHCR-Paket privat ist, vorher mit `docker login ghcr.io` anmelden oder die Paketsichtbarkeit auf GitHub auf öffentlich stellen.
+Image: ghcr.io/sandmaennchen5/multigit:latest. Die erweiterten Funktionen sind erst nach dem Bau und Bereitstellen des neuen Images verfügbar. Für einen lokalen Selbstbau stattdessen docker compose up -d --build ausführen. Rust wird dabei kompiliert; der erste Build kann mehrere Minuten dauern. MULTIGIT_REF wählt einen Upstream-Commit oder Tag, Standard master.
+
+Standardadresse: **http://localhost:8088**. Benutzer: WEB_USER (Standard admin), Passwort: WEB_PASSWORD.
+
+### NAS / Dockhand / Portainer
+
+Der Webserver verwendet immer **Container-Port 8080**. Ein eigener NAS-Port wird links angegeben:
+
+~~~yaml
+ports:
+  - "55567:8080"
+~~~
+
+Danach den Stack **neu bereitstellen** und **http://NAS-IP:55567** öffnen. Ein Container-Neustart allein ändert Portzuordnungen nicht. Die mitgelieferte Compose-Datei bindet standardmäßig an localhost; für Zugriff über die NAS-IP BIND_ADDRESS=0.0.0.0 setzen. Für Zugriff über das Netzwerk HTTPS über einen Reverse Proxy verwenden, damit die Basic-Anmeldung verschlüsselt übertragen wird.
+
+## Oberfläche
+
+| Bereich | Funktionen |
+|---|---|
+| Status | Branch, HEAD, Arbeitsverzeichnis, geänderte Dateien, Konflikte, bekannte Remote-Abstände, lokale Branches, Tags, letzte 30 Commits, Version und Keyring-Status |
+| Repository hinzufügen | Lokales Repository anlegen oder HTTPS-/SSH-Repository nach /repos klonen |
+| Alle Funktionen | Durchsuchbarer Katalog aller nativen MultiGit-Befehle mit Argumenten und Befehlshilfe |
+| Terminal / Sitzungen | Echte Linux-PTY mit Farben, Pfeiltasten, Passwortabfragen, Menüs, Enter, Strg+C, Größenänderung, Abbruch und Wiederverbinden |
+| Einstellungen / Remotes | Branch für Push/Sync, Pull-Quelle, Parallelität, Log-Stufe sowie Git-URLs und Anbieter einrichten und bearbeiten |
+| Vollständige Konfiguration | Repository- und globale TOML-Datei mit allen nativen Feldern, Datentypprüfung, Sicherung und Erkennung gleichzeitiger Änderungen |
+
+Status wird auf Wunsch alle zehn Sekunden aktualisiert. Remote-Abstände beziehen sich auf **lokal bekannte** Referenzen; Fetch aktualisiert diese. Die Oberfläche löst beim Anzeigen keinen Netzwerk-Sync aus. Höchstens 200 geänderte Dateien erscheinen in der Übersicht; der native Status zeigt weitere Details.
+
+### Native Funktionen im Browser
+
+- **Repository und Remotes:** Initialisierung, Einrichtungsassistent, Plattform-Repository erstellen, Remotes auflisten/hinzufügen/entfernen/testen und Zugangsdaten aktualisieren.
+- **Synchronisieren:** Fetch, Push, Pull, Sync mit Vorschau, Merge, Backup und Mirror mit Vorschau. Native Optionen einschließlich Force können über das Argumentfeld gesetzt werden.
+- **Branches und Tags:** Anzeigen, erstellen, löschen, wechseln und native Optionen für Basisbranch, Tag-Nachricht und Signierung.
+- **Dateien und Commits:** Interaktives Staging, Conventional-Commit-Assistent, Commit, Amend, Diff, Show, Verlauf/Graph, Changelog, Blame und Suche.
+- **Änderungen und Konflikte:** Stash, Undo, Reset, Revert, Cherry-pick, Rebase, Konflikterkennung und native Konfliktauflösung.
+- **Daemon:** Start mit Intervall, Stop, Status und Protokoll.
+- **Weitere Werkzeuge:** TUI-Dashboard, Arbeitssitzungen, Templates, Hooks, Aliase, Statistik, Diagnose/Reparatur, Version und Hilfe.
+- **Git-Durchreichung:** Weitere Git-Befehle wie config user.name "Mein Name", config user.email "name@example.com" oder status über die native Durchreichung ausführen.
+
+Ein Werkzeug wählen, Argumente optional ergänzen und starten. --help zeigt die verfügbaren Optionen des **tatsächlich gebauten MultiGit-Stands**. Argumente werden ohne Shell an MultiGit übergeben. Interaktive Programme laufen direkt im Terminal; als Editor ist Nano installiert. Nano und GPG sind installiert; eigene Signierschlüssel müssen für die native Tag-/Commit-Signierung verfügbar sein.
+
+Die Oberfläche stellt die Funktionen der Basis bereit. Unvollständige Upstream-Implementierungen, native Standardwerte und Fehlermeldungen bleiben sichtbar; sie werden nicht durch simulierte Erfolgsmeldungen ersetzt. Die Basis behandelt beispielsweise Sync-Strategien und manche Konfigurationsfelder nicht in jedem Befehl gleich.
+
+## Repositories und Einstellungen
+
+Das Verzeichnis ./repos ist nach /repos eingebunden. Ein Repository liegt beispielsweise unter /repos/mein-projekt. Bestehende Repositories lassen sich auch einzeln als beschreibbare Bind-Mounts einbinden. Der Container läuft als UID/GID **1000**; auf Linux müssen die Volume-Rechte dazu passen.
+
+Repository-Einstellungen stehen in .multigit/config.toml; globale Vorgaben in /data/config/multigit/config.toml. Vor Änderungen wird eine config.toml.bak angelegt. Der einfache Formulareditor erhält unbekannte Felder, entfernt beim Neuformatieren aber TOML-Kommentare. Der vollständige Editor erhält den eingegebenen Text und weist veraltete Schreibstände zurück.
+
+Lokale, unversionierte Konfiguration wird über .git/info/exclude vom Sync ausgeschlossen. Bereits versionierte Konfiguration bleibt eine normale Git-Änderung. Der Einstellungseditor benötigt die Git-Verwaltung innerhalb des Repository-Verzeichnisses; externe Git-Verwaltung/Worktrees werden dort abgelehnt. Native Befehle können Worktrees verwenden, sofern alle referenzierten Pfade korrekt im Container verfügbar sind.
+
+Ein deaktiviertes MultiGit-Ziel bleibt als Git-Remote erhalten. Die Pull-Quelle wird ausdrücklich gewählt; Pull verwendet den aktuell ausgecheckten Branch. Speichern einer Konfiguration startet keinen Sync und keinen Daemon. Die Vorschau zusammengeführter Konfiguration zeigt die Web-Zusammenführung; die native CLI hat teilweise andere Zusammenführungsregeln.
+
+## Token-Keyring und SSH
+
+Das Image startet eine private D-Bus-Sitzung mit GNOME Secret Service. Dadurch können native MultiGit-Assistenten Tokens in ihrem vorgesehenen System-Keyring speichern, auch ohne Desktop auf dem NAS. Beim Start werden Speichern, Lesen und Löschen eines geheimnisfreien Testeintrags geprüft.
+
+Der Keyring liegt verschlüsselt im persistenten Volume /data. Als Masterpasswort dient KEYRING_PASSWORD, falls gesetzt, sonst WEB_PASSWORD. **Dieses Masterpasswort bei bestehenden Daten beibehalten.** Soll nur das Webpasswort geändert werden, zunächst KEYRING_PASSWORD auf das bisherige Masterpasswort setzen. Ein falsches Masterpasswort verhindert den Start und wird im Container-Log gemeldet. Passwörter müssen einzeilig sein.
+
+Zugangsdaten in den nativen Einrichtungs-/Remote-Assistenten im Browser-Terminal eingeben. Die alternative Eingabezeile ist verdeckt. Tokens gehören nicht in Git-URLs oder TOML-Dateien. Die Oberfläche protokolliert Terminaleingaben nicht und speichert Terminalausgaben nur begrenzt im Arbeitsspeicher.
+
+Für SSH Schlüssel, SSH-Konfiguration und verifizierte known_hosts unter /data/.ssh einbinden. Eine persistente Identität bzw. ein vorhandener Agent muss für SSH verfügbar sein. Native HTTPS- und SSH-Unterstützung hängt zusätzlich von den Upstream-Befehlen ab.
+
+## Sitzungen und Betrieb
+
+Bis zu vier native Sitzungen können gleichzeitig laufen; davon ein schreibender Befehl. Während eines solchen Befehls sind Einstellungsänderungen gesperrt. Lesende Befehle ohne zusätzliche Optionen bleiben möglich. Zusätzliche Argumente werden vorsichtig als schreibend eingestuft; Befehlshilfe bleibt lesend. Der explizite Daemon-Stop ist auch bei laufendem Daemon verfügbar.
+
+Laufende Sitzungen sind nach dem Neuladen wieder auswählbar. Ausgabe ist auf etwa eine Million Zeichen pro Sitzung begrenzt. Unbenutzte normale Sitzungen enden nach 30 Minuten. Ein explizit gestarteter Auto-Sync ist davon ausgenommen und läuft bis Stop oder Container-Neustart. Nach einem Container-Neustart muss er erneut gestartet werden. Die Oberfläche startet keinen Auto-Sync allein aufgrund gespeicherter Daemon-Konfiguration.
+
+Das Terminal hat die Rechte des Container-Benutzers. Git-Hooks, Aliase, Editoren und native Git-Durchreichung können Programme im Container ausführen und beschreibbare Mounts ändern. Es ist eine Verwaltungsoberfläche für vertrauenswürdige Administratoren. Ändernde Aktionen benötigen eine ausdrückliche Bestätigung in der Oberfläche; eine reine Shell-Sitzung wird nicht gestartet.
+
+~~~sh
+docker compose logs -f
+docker compose pull
+docker compose up -d --no-build
+docker compose down
+~~~
+
+docker compose down erhält Repositories und Datenvolume. docker compose down -v würde auch den Token-Keyring entfernen.
+
+## GitHub-Build und Prüfungen
+
+Der Workflow .github/workflows/multigit-image.yml läuft bei Änderungen an MultiGit auf main, bei Tags multigit-v*, bei Pull Requests und manuell über **Actions → Build MultiGit image → Run workflow**.
+
+Er führt Python-Tests einschließlich Linux-PTY-Integration aus, baut zunächst ein AMD64-Testimage und prüft dessen Start, Keyring, Neustart, Repository-API und echte native Terminalbefehle. Erst danach folgen AMD64-/ARM64-Build und Veröffentlichung auf GHCR. Pull Requests veröffentlichen kein Image. Der aktuelle Upstream-Commit wird vor jedem Build aufgelöst und im Image festgehalten.
+
+Registry-Anmeldung erfolgt mit dem integrierten GITHUB_TOKEN. Tags: latest auf dem Standardbranch, sha-<Commit> und beispielsweise v1.0.0 bei einem Release-Tag multigit-v1.0.0. Private GHCR-Pakete erfordern docker login ghcr.io oder eine öffentlich gesetzte Paketsichtbarkeit.
+
+Lokale Tests:
+
+~~~sh
+python -m unittest discover -s multigit -p 'test_*.py' -v
+~~~
+
+Die Terminal-Bibliothek xterm.js 5.5.0 wird lokal mitgeliefert; Lizenz und Herkunft stehen unter assets/. Die Oberfläche lädt keine Terminal-Skripte von einem CDN.

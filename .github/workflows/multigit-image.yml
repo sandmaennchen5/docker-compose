@@ -86,6 +86,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Linux runtime test image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./multigit
+          platforms: linux/amd64
+          load: true
+          pull: true
+          tags: multigit-smoke:ci
+          build-args: |
+            MULTIGIT_REF=${{ steps.upstream.outputs.revision }}
+          cache-from: type=gha,scope=multigit
+      - name: Verify runtime, keyring and native terminal
+        run: python3 multigit/smoke_image.py multigit-smoke:ci
       - name: Build and publish
         uses: docker/build-push-action@v7
         with:

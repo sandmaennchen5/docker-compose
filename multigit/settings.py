@@ -248,3 +248,101 @@ def command_for(repo, action, base):
     if action == 'pull':
         command.extend(['--from', remote_name(data.get('sync', {}).get('primary_source') or 'origin')])
     return command
+
+
+# Every persisted field in the upstream configuration models is editable here.
+CONFIG_FIELDS = {
+    'settings': {'default_branch': str, 'parallel_push': bool, 'max_parallel': int,
+                 'colored_output': bool, 'verbosity': int},
+    'sync': {'auto_sync': bool, 'primary_source': str, 'strategy': str,
+             'include_branches': list, 'exclude_branches': list,
+             'detect_conflicts': bool, 'auto_resolve': bool},
+    'security': {'auth_backend': str, 'audit_log': bool, 'encryption_key_path': str,
+                 'ssh_agent': bool, 'allow_insecure_http': bool, 'allow_env_tokens': bool},
+    'daemon': {'enabled': bool, 'interval_seconds': int, 'background': bool,
+               'log_file': str, 'pid_file': str},
+}
+
+
+def document_path(repo, scope):
+    if scope == 'repo':
+        return config_path(repo)
+    if scope == 'global':
+        folder = Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config')))
+        return folder / 'multigit' / 'config.toml'
+    raise SettingsError('Unbekannter Konfigurationsbereich')
+
+
+def config_document(repo, scope):
+    target = document_path(repo, scope)
+    data = read_config(target)
+    text = target.read_text(encoding='utf-8') if target.exists() else ''
+    import hashlib
+    return dict(scope=scope, text=text, revision=hashlib.sha256(text.encode()).hexdigest(),
+                effective=effective_config(repo), fields={section: list(fields)
+                for section, fields in CONFIG_FIELDS.items()})
+
+
+def validate_config(data):
+    for section, fields in CONFIG_FIELDS.items():
+        values = data.get(section, {})
+        if not isinstance(values, dict):
+            raise SettingsError('Ungueltiger Abschnitt: ' + section)
+        for name, kind in fields.items():
+            if name in values and type(values[name]) is not kind:
+                raise SettingsError(section + '.' + name + ': falscher Datentyp')
+    general = data.get('settings', {})
+    if 'default_branch' in general:
+        validate_branch(general['default_branch'])
+    if not 1 <= general.get('max_parallel', 4) <= 32 or not 0 <= general.get('verbosity', 1) <= 3:
+        raise SettingsError('Parallelitaet oder Log-Stufe ausserhalb des Wertebereichs')
+    sync = data.get('sync', {})
+    if sync.get('strategy', 'fast-forward') not in ('fast-forward', 'merge', 'rebase', 'force'):
+        raise SettingsError('Unbekannte Sync-Strategie')
+    for field in ('include_branches', 'exclude_branches'):
+        for branch in sync.get(field, []):
+            validate_branch(branch)
+    security = data.get('security', {})
+    if security.get('auth_backend', 'keyring') not in ('keyring', 'encrypted-file', 'environment'):
+        raise SettingsError('Unbekanntes Zugangsdaten-Backend')
+    daemon = data.get('daemon', {})
+    interval = daemon.get('interval_seconds', 300)
+    if not 0 <= interval <= 31536000 or (daemon.get('enabled', False) and interval == 0):
+        raise SettingsError('Ein aktiver Daemon benoetigt ein positives Intervall bis 31536000 Sekunden')
+    remotes = data.get('remotes', {})
+    if not isinstance(remotes, dict):
+        raise SettingsError('Ungueltiger Remote-Abschnitt')
+    for name, remote in remotes.items():
+        remote_name(name)
+        if not isinstance(remote, dict) or not isinstance(remote.get('username'), str):
+            raise SettingsError('Remote benoetigt einen Benutzernamen: ' + name)
+        for field in ('enabled', 'use_ssh'):
+            if field in remote and type(remote[field]) is not bool:
+                raise SettingsError('Ungueltiger Remote-Schalter: ' + field)
+        if 'priority' in remote and (type(remote['priority']) is not int or not -(2**31) <= remote['priority'] < 2**31):
+            raise SettingsError('Ungueltige Remote-Prioritaet')
+        for field in ('provider', 'api_url'):
+            if field in remote and not isinstance(remote[field], str):
+                raise SettingsError('Ungueltiger Remote-Wert: ' + field)
+
+
+def save_document(repo, payload):
+    scope = payload.get('scope', 'repo')
+    target = document_path(repo, scope)
+    current = config_document(repo, scope)
+    if payload.get('revision') != current['revision']:
+        raise SettingsError('Die Datei wurde inzwischen geaendert. Neu laden und erneut bearbeiten.')
+    text = payload.get('text')
+    if not isinstance(text, str) or len(text.encode('utf-8')) > 65536:
+        raise SettingsError('Konfiguration ist zu gross')
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise SettingsError('Ungueltiges TOML: ' + str(error)) from error
+    validate_config(data)
+    if scope == 'repo':
+        exclude_local_config(repo)
+    if target.exists():
+        atomic_write(target.with_suffix('.toml.bak'), target.read_bytes())
+    atomic_write(target, text.encode('utf-8'))
+    return config_document(repo, scope)
