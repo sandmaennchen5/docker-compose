@@ -1,4 +1,5 @@
 """Integration tests use temporary local repositories, never configured servers."""
+import sys
 import importlib.util
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
 spec = importlib.util.spec_from_file_location('gitmesh', Path(__file__).parents[1] / 'gitmesh.py')
 mesh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mesh)
@@ -15,7 +17,7 @@ GIT = os.environ.get('GITMESH_TEST_GIT', shutil.which('git'))
 
 
 @unittest.skipUnless(GIT, 'Git executable required')
-class SyncTests(unittest.TestCase):
+class SyncFixture(unittest.TestCase):
     def command(self, path, *args, check=True):
         result = subprocess.run([GIT, '-c', 'protocol.file.allow=always', '-C', str(path), *args],
                                 text=True, capture_output=True, timeout=30)
@@ -55,6 +57,8 @@ class SyncTests(unittest.TestCase):
     def tip(self, remote, ref='refs/heads/main'):
         return self.command(Path(self.remotes[remote]), 'rev-parse', ref).stdout.strip()
 
+
+class SyncTests(SyncFixture):
     def test_three_way_sync_and_repeat_are_idempotent(self):
         status, details = mesh.synchronize(self.repo)
         self.assertEqual(status, 'success')

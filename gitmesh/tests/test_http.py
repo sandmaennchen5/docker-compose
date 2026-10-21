@@ -22,7 +22,7 @@ class HttpCase(unittest.TestCase):
         patch.object(mesh, 'DATA', self.root / 'data').start()
         patch.object(mesh, 'CONFIG', self.config).start()
         patch.dict(os.environ, {'GITMESH_ADMIN_TOKEN': 'a' * 32, 'TEST_HOOK': 'secret'}).start()
-        self.run = patch.object(mesh, 'run_all').start()
+        self.run = patch.object(mesh, 'run_all', return_value=[]).start()
         self.server = mesh.ThreadingHTTPServer(('127.0.0.1', 0), mesh.Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)

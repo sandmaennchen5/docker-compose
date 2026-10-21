@@ -3,3 +3,6 @@ gitmesh.json
 ssh/
 __pycache__/
 *.db
+
+node_modules/
+*.key

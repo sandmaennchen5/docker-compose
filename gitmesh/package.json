@@ -1,0 +1,11 @@
+{
+  "name": "gitmesh-ui-tests",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "test:browser": "node tests/browser-smoke.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}
