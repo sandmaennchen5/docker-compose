@@ -9,6 +9,14 @@ import urllib.error
 import urllib.request
 
 
+def published_address(name):
+    # Docker can assign a different ephemeral host port on container restart.
+    binding = subprocess.check_output(['docker', 'port', name, '8080/tcp'], text=True).strip()
+    if not binding or len(binding.splitlines()) != 1:
+        raise RuntimeError('Expected one published localhost port for the smoke container')
+    return 'http://' + binding
+
+
 def main(image):
     name = 'multigit-smoke-' + secrets.token_hex(4)
     password = secrets.token_urlsafe(24)
@@ -36,8 +44,7 @@ def main(image):
                         '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
                         '-e', 'WEB_PASSWORD=' + password, '-p', '127.0.0.1::8080', image],
                        check=True, capture_output=True, text=True)
-        port = subprocess.check_output(['docker', 'port', name, '8080/tcp'], text=True).strip()
-        base = 'http://' + port
+        base = published_address(name)
         deadline = time.monotonic() + 90
         while True:
             try:
@@ -57,6 +64,7 @@ def main(image):
         status = api('/api/overview?repo=smoke')
         assert status['clean'] and status['commits'] == []
         subprocess.run(['docker', 'restart', name], check=True, capture_output=True)
+        base = published_address(name)
         deadline = time.monotonic() + 90
         while True:
             try:
