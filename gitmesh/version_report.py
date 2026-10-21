@@ -44,8 +44,12 @@ def yaml_lines(value, indent=0):
             yield prefix + label + ': ' + json.dumps(item, ensure_ascii=False)
 
 
+def valid_digest(digest):
+    return isinstance(digest, str) and digest.startswith('sha256:') and len(digest) == 71 and all(c in '0123456789abcdef' for c in digest[7:])
+
+
 def report(image, digest, revision, ref, measurements):
-    if not digest.startswith('sha256:') or len(digest) != 71 or any(c not in '0123456789abcdef' for c in digest[7:]):
+    if not valid_digest(digest):
         raise ValueError('A published image digest is required')
     if set(measurements) != set(PLATFORMS):
         raise ValueError('Versions for both image platforms are required')
@@ -55,16 +59,31 @@ def report(image, digest, revision, ref, measurements):
             'base': {'image': 'python:3.13-slim'}, 'platforms': measurements}
 
 
-def collect(image, digest):
-    measurements = {}
-    reference = image + '@' + digest
+def platform_digests(image, digest):
+    # Inspect the immutable registry index without importing it into Docker's local image store.
+    index = json.loads(command('docker', 'manifest', 'inspect', image + '@' + digest))
+    references = {}
     for target in PLATFORMS:
-        # The classic Docker image store caches only one architecture per index reference.
-        # Pull explicitly before each run, even when that index digest is already cached.
+        matches = [entry.get('digest', '') for entry in index.get('manifests', [])
+                   if entry.get('platform', {}).get('os', '') + '/' + entry.get('platform', {}).get('architecture', '') == target]
+        if len(matches) != 1 or not valid_digest(matches[0]):
+            raise ValueError('Exactly one valid platform manifest required for ' + target)
+        references[target] = matches[0]
+    return references
+
+
+def collect(image, digest):
+    if not valid_digest(digest):
+        raise ValueError('A published image digest is required')
+    measurements = {}
+    for target, child_digest in platform_digests(image, digest).items():
+        # Use each platform's manifest digest, never the shared index digest. The classic
+        # Docker store cannot overwrite an index reference already associated with another architecture.
+        reference = image + '@' + child_digest
         command('docker', 'pull', '--platform', target, reference)
         output = command('docker', 'run', '--rm', '--pull=never', '--network', 'none', '--platform', target,
                          '--entrypoint', 'python', reference, '/app/version_report.py', '--probe')
-        measurements[target] = json.loads(output)
+        measurements[target] = dict(json.loads(output), image_digest=child_digest)
     return measurements
 
 

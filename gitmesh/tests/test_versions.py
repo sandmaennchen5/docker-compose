@@ -26,16 +26,38 @@ class VersionReportTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[1].split(': ', 1)[1]), value['special'])
         self.assertEqual(json.loads(lines[2].split(': ', 1)[1]), value['platforms'])
 
-    def test_each_architecture_is_pulled_even_if_index_digest_is_cached(self):
-        reference = 'ghcr.io/example/gitmesh@sha256:' + 'a' * 64
-        with patch.object(version_report, 'command', side_effect=['pulled amd64', '{"git":"amd64-version"}', 'pulled arm64', '{"git":"arm64-version"}']) as run:
-            measurements = version_report.collect('ghcr.io/example/gitmesh', 'sha256:' + 'a' * 64)
-        self.assertEqual(measurements['linux/arm64']['git'], 'arm64-version')
-        self.assertEqual(run.call_count, 4)
-        for offset, target in ((0, 'linux/amd64'), (2, 'linux/arm64')):
-            self.assertEqual(run.call_args_list[offset].args, ('docker', 'pull', '--platform', target, reference))
-            self.assertIn('--pull=never', run.call_args_list[offset + 1].args)
-            self.assertIn(target, run.call_args_list[offset + 1].args)
+    def test_platform_manifest_references_prevent_classic_docker_digest_collision(self):
+        index = 'sha256:' + 'a' * 64
+        children = {'linux/amd64': 'sha256:' + 'b' * 64, 'linux/arm64': 'sha256:' + 'c' * 64}
+        manifests = [{'digest': digest, 'platform': dict(zip(('os', 'architecture'), target.split('/')))} for target, digest in children.items()]
+        manifests.append({'digest': 'sha256:' + 'd' * 64, 'platform': {'os': 'unknown', 'architecture': 'unknown'}})
+        cache = {}
+        def docker(*args):
+            if args[:3] == ('docker', 'manifest', 'inspect'):
+                return json.dumps({'manifests': manifests})
+            target = args[args.index('--platform') + 1]
+            reference = 'ghcr.io/example/gitmesh@' + children[target]
+            self.assertIn(reference, args)
+            self.assertNotIn('ghcr.io/example/gitmesh@' + index, args)
+            if args[1] == 'pull':
+                if reference in cache and cache[reference] != target:
+                    raise RuntimeError('cannot overwrite digest')
+                cache[reference] = target
+                return 'pulled'
+            self.assertEqual(cache[reference], target)
+            self.assertIn('--pull=never', args)
+            return json.dumps({'git': target + '-version'})
+        with patch.object(version_report, 'command', side_effect=docker):
+            measurements = version_report.collect('ghcr.io/example/gitmesh', index)
+        self.assertEqual(measurements['linux/arm64']['git'], 'linux/arm64-version')
+        self.assertEqual(measurements['linux/arm64']['image_digest'], children['linux/arm64'])
+        self.assertEqual(len(cache), 2)
+
+    def test_missing_platform_fails_before_importing_any_image(self):
+        with patch.object(version_report, 'command', return_value=json.dumps({'manifests': []})) as run:
+            with self.assertRaisesRegex(ValueError, 'linux/amd64'):
+                version_report.collect('image', 'sha256:' + 'a' * 64)
+        self.assertEqual(run.call_count, 1)
 
     def test_docker_stderr_is_visible_on_failure(self):
         result = subprocess.CompletedProcess([], 125, '', 'image platform does not match linux/arm64')
