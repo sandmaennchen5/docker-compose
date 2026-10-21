@@ -18,20 +18,19 @@ Bestehende Repositories lassen sich alternativ einzeln unter `/repos/<name>` als
 
 ## Einrichten und Zugangsdaten
 
-Im Webinterface zuerst das Repository wählen und initialisieren. Interaktive MultiGit-Einrichtung erfolgt im Terminal, beispielsweise:
+Im Webinterface das Repository wählen und **Einstellungen** öffnen. Branch für Push/Sync, Pull-Quelle und maximale Parallelität lassen sich dort speichern. Ein leerer Branch verwendet eine vorhandene globale Vorgabe oder den aktuellen Branch. Pull verwendet immer den aktuell ausgecheckten Branch. Die Log-Stufe wird als MultiGit-Vorgabe gespeichert; ihre Wirkung hängt vom CLI-Befehl ab.
 
-```sh
-docker compose exec -w /repos/mein-repo multigit mg remote add github DEIN-NAME
-docker compose exec -w /repos/mein-repo multigit mg config show
-```
+Unter **Remotes** können Git-Ziele mit HTTPS-/SSH-URL, Anbieter, Benutzername und optionaler Instanz-URL hinzugefügt und bearbeitet werden. **Für MultiGit aktivieren** steuert die Teilnahme an Push/Sync; ein deaktiviertes Ziel bleibt in Git erhalten. Änderungen lösen keinen Netzwerkzugriff, Push oder Sync aus. Die Pull-Quelle wird unabhängig davon ausdrücklich gewählt.
 
-Im Container gibt es keinen Desktop-Keyring. MultiGit muss mit seinem verschlüsselten Datei-Backend eingerichtet werden; dessen Verfügbarkeit und Passwortabfragen hängen vom gewählten Upstream-Stand ab. Das persistente Volume `/data` bewahrt Benutzerkonfiguration und Zugangsdaten. Falls die CLI eine interaktive Passwortabfrage benötigt, den betreffenden Befehl über `docker compose exec` ausführen: Das Webinterface liefert bewusst keine Terminaleingaben. SSH-Schlüssel und `known_hosts` bei Bedarf gezielt unter `/data/.ssh` einbinden und passende Dateirechte setzen. Keine Tokens in Remote-URLs speichern.
+Die Oberfläche speichert die Repository-Konfiguration in `.multigit/config.toml` und legt vor Änderungen eine `config.toml.bak` an. Vorhandene Konfigurationsabschnitte bleiben erhalten; TOML-Kommentare werden beim Speichern entfernt. Die lokale Git-Ausschlussdatei ignoriert `/.multigit/`, damit unversionierte Einstellungen keinen Sync blockieren. Bereits versionierte Konfigurationsdateien müssen weiterhin wie normale Änderungen committet werden. Die Web-Einstellungen benötigen ein normales Repository mit seiner Git-Verwaltung innerhalb des Repository-Verzeichnisses; externe Git-Verwaltung und Worktrees werden beim Speichern abgelehnt.
 
-Webaktionen verwenden feste Argumente ohne Shell, laufen einzeln und haben ein Zeitlimit von 120 Sekunden. Die Ausgabe zeigt CLI-Fehler und Exit-Code. Bei einem Timeout Repository-Status prüfen, bevor erneut synchronisiert wird. Die Vorschau vor einem Sync nutzen; Push/Pull/Sync können lokale oder entfernte Repositories ändern. Remotes hinzufügen und Konflikte lösen erfolgen über die CLI.
+Für private Ziele vorhandene SSH-Schlüssel, SSH-Konfiguration und verifizierte `known_hosts` gezielt unter `/data/.ssh` einbinden. Zugangsdaten werden nicht über diese Oberfläche gespeichert; vorhandene MultiGit-/Git-Zugangsdaten können weiterverwendet werden. Tokens in Remote-URLs und unsichere lokale Git-Transportprotokolle werden abgelehnt. Im Container steht kein Desktop-Keyring zur Verfügung.
+
+Webaktionen verwenden feste Argumente ohne Shell, laufen einzeln und haben ein Zeitlimit von 120 Sekunden. Die Ausgabe zeigt CLI-Fehler und Exit-Code. Bei einem Timeout Repository-Status prüfen, bevor erneut synchronisiert wird. Die Vorschau vor einem Sync nutzen; Push/Pull/Sync können lokale oder entfernte Repositories ändern. Konfliktauflösung erfolgt über die CLI.
 
 ## Betrieb
 
-Der Port bindet standardmäßig nur an localhost. Für Zugriff im LAN `BIND_ADDRESS` anpassen; bei Zugriff über das Netzwerk HTTPS über einen Reverse Proxy bereitstellen, da HTTP-Basic-Anmeldung selbst nicht verschlüsselt ist.
+Der Port bindet standardmäßig nur an localhost. Für Zugriff im LAN `BIND_ADDRESS=0.0.0.0` setzen. Auf dem NAS muss ein eigener Host-Port immer auf **Container-Port 8080** zeigen, beispielsweise `55567:8080` mit Zugriff über `http://NAS-IP:55567`; bei Zugriff über das Netzwerk HTTPS über einen Reverse Proxy bereitstellen, da HTTP-Basic-Anmeldung selbst nicht verschlüsselt ist.
 
 ```sh
 docker compose logs -f

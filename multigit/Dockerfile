@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 git ope
     && useradd --uid 1000 --create-home app && mkdir /repos /data && chown app:app /repos /data
 COPY --from=builder /src/target/release/multigit /usr/local/bin/multigit
 RUN ln -s /usr/local/bin/multigit /usr/local/bin/mg
-COPY web.py index.html /app/
+COPY web.py settings.py index.html /app/
 ENV HOME=/data XDG_CONFIG_HOME=/data/config PYTHONUNBUFFERED=1 GIT_TERMINAL_PROMPT=0
 USER app
 WORKDIR /app

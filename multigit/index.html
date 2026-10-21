@@ -1,23 +1,55 @@
 <!doctype html>
-<html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="de">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MultiGit · Webinterface</title>
 <style>
-body{font:16px system-ui;background:#101722;color:#e3eaf4;max-width:1000px;margin:50px auto;padding:0 24px}h1{margin-bottom:4px}p{color:#a9bbd1}section{background:#192536;border:1px solid #304057;border-radius:12px;padding:24px;margin:24px 0}button,select{font:inherit;background:#283d58;color:white;border:1px solid #496080;border-radius:7px;padding:10px 14px;margin:5px}button{cursor:pointer}button:hover{background:#38577c}button:disabled{opacity:.4;cursor:wait}pre{white-space:pre-wrap;overflow-wrap:anywhere;min-height:220px;background:#0b111b;padding:20px;border-radius:8px}label{display:block}#state{color:#8ed5c0}
+:root{color-scheme:dark}*{box-sizing:border-box}body{font:16px system-ui;background:#101722;color:#e3eaf4;max-width:1100px;margin:40px auto;padding:0 24px}h1{margin-bottom:4px}h2{margin-top:0}p,small{color:#a9bbd1}section,.card{background:#192536;border:1px solid #304057;border-radius:12px;padding:24px;margin:20px 0}button,select,input{font:inherit;background:#283d58;color:white;border:1px solid #496080;border-radius:7px;padding:10px 14px}button{cursor:pointer;margin:5px 5px 5px 0}button:hover{background:#38577c}button:disabled{opacity:.4;cursor:wait}input,select{width:100%}input[type=checkbox]{width:auto}label{display:block;margin:10px 0 5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;min-height:180px;background:#0b111b;padding:20px;border-radius:8px}.row{display:flex;gap:20px;align-items:end}.row>*{flex:1}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}.active,.primary{background:#236c66}#state{color:#8ed5c0}#notice{padding:12px 0;min-height:44px}#notice.error{color:#ffb6b6}.card{padding:16px;margin:12px 0;overflow-wrap:anywhere}nav{margin:18px 0}[hidden]{display:none!important}@media(max-width:650px){.grid{grid-template-columns:1fr}.row{display:block}body{padding:0 14px}}
 </style>
 <h1>MultiGit</h1><p>Ein Repository. Mehrere Ziele. Dein Sync im Blick.</p>
-<section><label for="repo">Repository</label><select id="repo"></select><button id="refresh">Aktualisieren</button>
-<p>Git-Repositories als direkte Unterordner in <code>/repos</code> einbinden.</p>
-<div id="actions"></div></section>
-<section><strong id="state" role="status">Bereit</strong><pre id="output" aria-live="polite">Repository auswählen und Status abrufen.</pre></section>
+<section><div class="row"><div><label for="repo">Repository</label><select id="repo"></select></div><div><button id="refresh">Aktualisieren</button></div></div><small>Git-Repositories als direkte Unterordner in /repos einbinden.</small></section>
+<nav aria-label="Ansicht"><button id="overview-tab" class="active" aria-pressed="true">Übersicht</button><button id="settings-tab" aria-pressed="false">Einstellungen</button></nav>
+<div id="notice" role="status" aria-live="polite"></div>
+<div id="overview-panel"><section><div id="actions"></div></section><section><strong id="state">Bereit</strong><pre id="output" aria-live="polite">Repository auswählen und Status abrufen.</pre></section></div>
+<div id="settings-panel" hidden>
+<section><h2>Repository-Einstellungen</h2><p id="settings-context"></p>
+<form id="settings-form"><fieldset id="general-fields"><legend>Branch und Ausführung</legend><div class="grid">
+<div><label for="branch">Branch für Push und Sync</label><input id="branch" maxlength="255" placeholder="Leer: aktueller Branch / globale Vorgabe"><small>Pull verwendet den aktuell ausgecheckten Branch.</small></div>
+<div><label for="primary-source">Pull-Quelle</label><input id="primary-source" maxlength="64" required value="origin"></div>
+<div><label for="max-parallel">Maximal parallele Vorgänge</label><input id="max-parallel" type="number" min="1" max="32" value="4" required></div>
+<div><label for="verbosity">Log-Stufe</label><select id="verbosity"><option value="0">Fehler</option><option value="1" selected>Warnungen</option><option value="2">Informationen</option><option value="3">Debug</option></select><small>MultiGit übernimmt diese Vorgabe abhängig vom Befehl.</small></div>
+</div><button class="primary" type="submit">Einstellungen speichern</button></fieldset></form>
+<p>Die Einstellungen gelten für das gewählte Repository und bleiben nach einem Container-Neustart erhalten. Speichern löst keinen Sync aus.</p></section>
+<section><h2>Remotes</h2><p>Git-Ziele hinzufügen oder bearbeiten und für MultiGit aktivieren. Ein deaktiviertes Ziel bleibt als Git-Remote erhalten.</p><div id="remote-list"></div>
+<form id="remote-form"><fieldset id="remote-fields"><legend id="remote-title">Remote hinzufügen</legend><div class="grid">
+<div><label for="remote-name">Remote-Name</label><input id="remote-name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="github oder backup"></div>
+<div><label for="remote-provider">Anbieter</label><select id="remote-provider"><option>github</option><option>gitlab</option><option>bitbucket</option><option>codeberg</option><option>gitea</option><option>forgejo</option></select></div>
+<div><label for="remote-url">Git-URL (HTTPS oder SSH)</label><input id="remote-url" required maxlength="2048" placeholder="git@github.com:benutzer/projekt.git"></div>
+<div><label for="remote-user">Benutzername beim Anbieter</label><input id="remote-user" maxlength="255" autocomplete="off"></div>
+<div><label for="remote-api">Eigene API-/Instanz-URL (optional)</label><input id="remote-api" type="url" placeholder="https://git.example.com"></div>
+</div><label><input id="remote-enabled" type="checkbox" checked> Für MultiGit aktivieren</label><label><input id="remote-ssh" type="checkbox"> SSH verwenden</label>
+<p>Für private Ziele vorhandene SSH-Schlüssel oder eingerichtete Zugangsdaten verwenden. Tokens gehören nicht in Git-URLs; die Oberfläche speichert keine Tokens.</p>
+<button class="primary" type="submit">Remote speichern</button><button id="remote-new" type="button">Neues Remote</button></fieldset></form>
+</section></div>
 <script>
-const repo=document.querySelector('#repo'),out=document.querySelector('#output'),state=document.querySelector('#state');
-async function refresh(){try{const r=await fetch('/api/repos');if(!r.ok)throw Error('Repositories konnten nicht geladen werden');const names=await r.json();repo.replaceChildren(...names.map(n=>new Option(n,n)));if(!names.length)out.textContent='Keine Repositories gefunden. Ein vorhandenes Git-Repository nach ./repos einbinden.';}catch(e){state.textContent=e.message;}}
-document.querySelector('#refresh').onclick=refresh;
-for(const [action,label] of Object.entries({status:'Status',remotes:'Remotes',init:'Initialisieren',preview:'Sync-Vorschau',sync:'Synchronisieren',push:'Push',pull:'Pull',doctor:'Diagnose'})){
- const button=document.createElement('button');button.textContent=label;document.querySelector('#actions').append(button);
- button.onclick=async()=>{if(!repo.value)return;if(['sync','push','pull','init'].includes(action)&&!confirm(label+' für '+repo.value+' ausführen?'))return;
- document.querySelectorAll('button').forEach(b=>b.disabled=true);state.textContent=label+' läuft …';out.textContent='';
- try{const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json','X-MultiGit':'1'},body:JSON.stringify({repo:repo.value,action})});const data=await r.json();out.textContent=data.output||data.error||'(Keine Ausgabe)';state.textContent=r.ok?'Beendet · Exit-Code '+data.code:'Fehler';}catch(e){state.textContent='Verbindungsfehler';out.textContent=e.message;}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false);}};
-}
-refresh();
+const $=selector=>document.querySelector(selector);
+const repo=$('#repo'),out=$('#output'),state=$('#state');
+let busy=false,settings=null;
+function notice(message,error=false){$('#notice').textContent=message;$('#notice').classList.toggle('error',error);}
+function setBusy(value){busy=value;document.querySelectorAll('button,fieldset,#repo').forEach(element=>element.disabled=value);$('#general-fields').disabled=value||!settings;$('#remote-fields').disabled=value||!settings;}
+async function api(url,payload){const options=payload?{method:'POST',headers:{'Content-Type':'application/json','X-MultiGit':'1'},body:JSON.stringify(payload)}:{};const response=await fetch(url,options);if(response.status===401)throw Error('Anmeldung erforderlich. Seite neu laden.');const data=await response.json();if(!response.ok)throw Error(data.error||'Anfrage fehlgeschlagen');return data;}
+async function perform(work){if(busy)return;setBusy(true);try{await work();}catch(error){notice(error.message,true);}finally{setBusy(false);}}
+function showPanel(name){for(const item of ['overview','settings']){const active=item===name;$('#'+item+'-panel').hidden=!active;$('#'+item+'-tab').classList.toggle('active',active);$('#'+item+'-tab').setAttribute('aria-pressed',String(active));}}
+$('#overview-tab').onclick=()=>showPanel('overview');$('#settings-tab').onclick=()=>showPanel('settings');
+function resetRemote(){ $('#remote-form').reset();$('#remote-name').readOnly=false;$('#remote-title').textContent='Remote hinzufügen';}
+$('#remote-new').onclick=resetRemote;
+function editRemote(item){resetRemote();$('#remote-name').value=item.name;$('#remote-name').readOnly=true;$('#remote-provider').value=item.provider;$('#remote-url').value=item.url;$('#remote-user').value=item.username;$('#remote-api').value=item.api_url;$('#remote-enabled').checked=item.enabled;$('#remote-ssh').checked=item.use_ssh;$('#remote-title').textContent='Remote bearbeiten: '+item.name;$('#remote-url').focus();}
+function renderSettings(data){settings=data;$('#branch').value=data.branch;$('#max-parallel').value=data.max_parallel;$('#verbosity').value=data.verbosity;$('#primary-source').value=data.primary_source;$('#settings-context').textContent='Repository: '+repo.value;$('#remote-list').replaceChildren();for(const item of data.remotes){const card=document.createElement('div');card.className='card';const title=document.createElement('strong');title.textContent=item.name+' · '+(item.enabled?'aktiv':'inaktiv');const url=document.createElement('p');url.textContent=item.url||'URL leer oder ausgeblendet. Zum Bearbeiten erneut eingeben.';const button=document.createElement('button');button.textContent='Bearbeiten';button.onclick=()=>editRemote(item);card.append(title,url,button);$('#remote-list').append(card);}if(!data.remotes.length)$('#remote-list').textContent='Noch keine Remotes eingerichtet.';}
+async function loadSettings(){settings=null;resetRemote();$('#general-fields').disabled=true;$('#remote-fields').disabled=true;if(!repo.value){$('#settings-context').textContent='Zuerst ein Repository einbinden.';return;}renderSettings(await api('/api/settings?repo='+encodeURIComponent(repo.value)));}
+async function refresh(){const selected=repo.value;const names=await api('/api/repos');repo.replaceChildren(...names.map(name=>new Option(name,name)));if(names.includes(selected))repo.value=selected;if(!names.length)out.textContent='Keine Repositories gefunden. Ein Git-Repository unter /repos einbinden.';await loadSettings();}
+$('#refresh').onclick=()=>perform(refresh);repo.onchange=()=>perform(async()=>{notice('');await loadSettings();});
+$('#settings-form').onsubmit=event=>{event.preventDefault();perform(async()=>{if(!repo.value)return;renderSettings(await api('/api/settings',{repo:repo.value,branch:$('#branch').value.trim(),max_parallel:Number($('#max-parallel').value),verbosity:Number($('#verbosity').value),primary_source:$('#primary-source').value.trim()}));notice('Einstellungen gespeichert.');});};
+$('#remote-url').onchange=()=>{$('#remote-ssh').checked=/^(ssh:|[^/]+@[^/]+:)/.test($('#remote-url').value);};
+$('#remote-form').onsubmit=event=>{event.preventDefault();perform(async()=>{if(!repo.value)return;renderSettings(await api('/api/remote',{repo:repo.value,name:$('#remote-name').value.trim(),provider:$('#remote-provider').value,url:$('#remote-url').value.trim(),username:$('#remote-user').value.trim(),api_url:$('#remote-api').value.trim(),enabled:$('#remote-enabled').checked,use_ssh:$('#remote-ssh').checked}));resetRemote();notice('Remote gespeichert. Es wurde kein Push oder Sync ausgeführt.');});};
+for(const [action,label] of Object.entries({status:'Status',remotes:'Remotes',init:'Initialisieren',preview:'Sync-Vorschau',sync:'Synchronisieren',push:'Push',pull:'Pull',doctor:'Diagnose'})){const button=document.createElement('button');button.textContent=label;$('#actions').append(button);button.onclick=()=>{if(!repo.value)return;if(['sync','push','pull','init'].includes(action)&&!confirm(label+' für '+repo.value+' ausführen?'))return;perform(async()=>{notice('');state.textContent=label+' läuft …';out.textContent='';try{const data=await api('/api/run',{repo:repo.value,action});out.textContent=data.output||'(Keine Ausgabe)';state.textContent='Beendet · Exit-Code '+data.code;if(action==='init')await loadSettings();}catch(error){state.textContent='Fehler';throw error;}});};}
+perform(refresh);
 </script></html>
