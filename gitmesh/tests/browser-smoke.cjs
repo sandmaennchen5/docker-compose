@@ -114,11 +114,16 @@ async function main() {
     await profile.locator('.repo-branches').fill('main, release/*');
     await profile.locator('.repo-interval').fill('0');
     await profile.locator('.repo-tags').uncheck();
+    assert.equal(await profile.locator('.repo-create').isChecked(), false);
+    await profile.locator('.repo-create').check();
+    assert.equal(await profile.locator('.repo-create-private').isChecked(), true);
     await page.getByRole('button', {name: 'Einstellungen speichern', exact: true}).click();
     await page.getByRole('status').filter({hasText: 'Einstellungen gespeichert.'}).waitFor();
     const settings = await api('/api/settings');
     assert.deepEqual(settings.repositories[0].branches, ['main', 'release/*']);
     assert.equal(settings.repositories[0].interval, 0);
+    assert.equal(settings.repositories[0].create_missing, true);
+    assert.equal(settings.repositories[0].create_private, true);
     assert.equal(settings.repositories[0].remote_providers.target, target.id);
     assert.equal(settings.repositories[0].remotes.target, 'https://target.example.invalid/mirror/project.git');
     await page.locator('[data-page=worker]').click();
@@ -158,6 +163,8 @@ async function main() {
     assert.equal(await page.locator('[data-page=users]').isVisible(), true);
     await page.locator('[data-page=profiles]').click();
     assert.equal(await profile.locator('.repo-branches').inputValue(), 'main, release/*');
+    assert.equal(await profile.locator('.repo-create').isChecked(), true);
+    assert.equal(await profile.locator('.repo-create-private').isChecked(), true);
     if (process.env.GITMESH_SCREENSHOT) await page.screenshot({path: process.env.GITMESH_SCREENSHOT, fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'Mobile page must fit viewport');

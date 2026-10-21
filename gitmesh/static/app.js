@@ -86,14 +86,17 @@ function repoEditor(repo = {name: '', enabled: false, remotes: {source: '', targ
   field(grid, 'Profilname', repo.name, 'repo-name', {required: true, pattern: '[A-Za-z0-9][A-Za-z0-9_-]{0,79}'});
   field(grid, 'Aktiv', repo.enabled !== false, 'repo-enabled', {type: 'checkbox'});
   const direction = select(grid, 'Richtung', [['bidirectional', 'Bidirektional'], ['one-way', 'Einweg: Quelle → Ziele']], repo.direction || 'bidirectional', 'repo-direction');
-  const source = select(grid, 'Quell-Remote für Einwegmodus', [], '', 'repo-source');
+  const source = select(grid, 'Quell-/Start-Remote', [], '', 'repo-source');
   const policy = select(grid, 'Konfliktregel', [['ff-only', 'Fast-forward; Konflikte überspringen'], ['reject', 'Bei Konflikt gesamtes Profil überspringen'], ['force-with-lease', 'Erzwungen mit Zielstand-Prüfung (Einweg)']], repo.policy || 'ff-only', 'repo-policy');
   field(grid, 'Branch-Filter (durch Komma getrennt; leer = alle)', (repo.branches || []).join(', '), 'repo-branches', {placeholder: 'main, release/*'});
   field(grid, 'Tags synchronisieren', repo.tags !== false, 'repo-tags', {type: 'checkbox'});
   field(grid, 'Intervall in Sekunden (leer = Standard; 0 = nur manuell)', repo.interval ?? '', 'repo-interval', {type: 'number', min: 0, max: 86400});
   field(grid, 'Webhook-Secret: Umgebungsvariable', repo.webhook_secret_env || 'GITMESH_WEBHOOK_SECRET', 'repo-secret');
+  const create = field(grid, 'Fehlende Ziel-Repositories automatisch anlegen', !!repo.create_missing, 'repo-create', {type: 'checkbox'});
+  const createPrivate = field(grid, 'Neue Ziele privat anlegen (deaktiviert = öffentlich)', repo.create_private !== false, 'repo-create-private', {type: 'checkbox'});
   const force = field(grid, 'Ich bestätige: Zielhistorie darf im Einwegmodus überschrieben werden.', repo.force_confirmed, 'repo-force', {type: 'checkbox'});
-  const updatePolicy = () => { source.disabled = direction.value !== 'one-way'; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
+  const updatePolicy = () => { source.disabled = direction.value !== 'one-way' && !create.checked; createPrivate.parentElement.hidden = !create.checked; force.parentElement.hidden = policy.value !== 'force-with-lease'; force.required = policy.value === 'force-with-lease'; };
+  create.addEventListener('change', updatePolicy);
   policy.addEventListener('change', updatePolicy); direction.addEventListener('change', updatePolicy); updatePolicy();
   card.append(grid);
   const remotes = node('div', '', 'remote-list'); card.append(remotes);
@@ -121,6 +124,7 @@ function collectSettings() {
     }
     const repo = {name: card.querySelector('.repo-name').value.trim(), enabled: card.querySelector('.repo-enabled').checked,
       direction: card.querySelector('.repo-direction').value, source: card.querySelector('.repo-source').value,
+      create_missing: card.querySelector('.repo-create').checked, create_private: card.querySelector('.repo-create-private').checked,
       policy: card.querySelector('.repo-policy').value, force_confirmed: card.querySelector('.repo-force').checked,
       tags: card.querySelector('.repo-tags').checked, branches: card.querySelector('.repo-branches').value.split(',').map(x => x.trim()).filter(Boolean),
       webhook_secret_env: card.querySelector('.repo-secret').value.trim(), remotes, remote_providers};

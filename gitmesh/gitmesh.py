@@ -1,6 +1,7 @@
 """GitMesh: conservative multi-remote Git synchronization, Python standard library only."""
 from contextlib import contextmanager
 import hashlib
+import base64
 import fnmatch
 import math
 import signal
@@ -15,7 +16,7 @@ import threading
 import time
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote, quote_plus
 import management
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -29,10 +30,42 @@ def control():
     return management.Control(DATA)
 
 
+def redact_git_output(output):
+    text = output.decode('utf-8', errors='replace') if isinstance(output, bytes) else (output or '')
+    secrets = []
+    for username, token in getattr(GIT_CONTEXT, 'credentials', {}).values():
+        if token:
+            secrets.extend([token, quote(token, safe=''), quote_plus(token),
+                            base64.b64encode(token.encode()).decode(),
+                            base64.b64encode((username + ':' + token).encode()).decode()])
+    secrets.extend(value for key, value in os.environ.items() if key.startswith('GITMESH_') and any(part in key for part in ('TOKEN', 'SECRET', 'KEY')) and value)
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        text = text.replace(secret, '[REDACTED]')
+    text = re.sub(r'(?i)(https?://)[^\s/@]+@', r'\1[REDACTED]@', text)
+    text = re.sub(r'(?im)(authorization|private-token|x-gitlab-token)\s*[:=][^\r\n]*', r'\1: [REDACTED]', text)
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = ''.join(c for c in text if c in '\n\t' or ord(c) >= 32 and ord(c) != 127)
+    return text.strip()[:4000]
+
+
 class GitFailure(RuntimeError):
-    def __init__(self, operation):
+    def __init__(self, operation, remote=None, exit_code=None, stderr=''):
         super().__init__('Git operation failed: ' + operation)
         self.retryable = operation != 'push'
+        error = redact_git_output(stderr)
+        hints = [
+            (('host key verification failed',), 'SSH-Hostschluessel in known_hosts pruefen.'),
+            (('permission denied (publickey)',), 'SSH-Schluessel, Benutzer und Repository-Berechtigung pruefen.'),
+            (('authentication failed', 'could not read username', 'terminal prompts disabled'), 'HTTPS-Provider zuordnen und Token sowie Git-Benutzername pruefen.'),
+            (('repository not found', 'does not appear to be a git repository'), 'Repository-URL und Leserechte pruefen; Ziel-Repositories muessen bereits existieren.'),
+            (('could not resolve host', 'could not resolve hostname'), 'DNS und Hostnamen aus dem Container pruefen.'),
+            (('ssl certificate problem', 'certificate verify failed'), 'Zertifikatskette und CA-Vertrauen im Container pruefen.'),
+            (('non-fast-forward', 'stale info', 'protected branch', 'pre-receive hook declined'), 'Zielbranch wurde geaendert oder durch Branchschutz abgelehnt.'),
+            (('timed out', 'timeout'), 'Netzwerkverbindung und Erreichbarkeit des Git-Servers pruefen.')]
+        hint = next((hint for patterns, hint in hints if any(pattern in error.lower() for pattern in patterns)),
+                    'Git-Ausgabe sowie URL, Verbindung und Berechtigungen pruefen.')
+        self.details = {'message': 'Git-' + operation + ' fehlgeschlagen' + (' (Remote: ' + remote + ')' if remote else ''),
+                        'operation': operation, 'remote': remote, 'exit_code': exit_code, 'git_error': error, 'hint': hint}
 
 
 def git(path, *args, check=True):
@@ -43,11 +76,17 @@ def git(path, *args, check=True):
         username, token = credentials[remote]
         env.update(GIT_ASKPASS=str(Path(__file__).with_name('askpass.py')), GITMESH_GIT_USERNAME=username,
                    GITMESH_GIT_TOKEN=token)
-    result = subprocess.run(['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never',
+    remote_name = next((arg for arg in args[1:] if not arg.startswith('-')), None) if args[0] in ('fetch', 'push') else None
+    try:
+        result = subprocess.run(['git', '-c', 'protocol.file.allow=never', '-c', 'protocol.ext.allow=never',
                              '-c', 'credential.helper=', '-c', 'http.followRedirects=false',
                              '-C', str(path), *args], capture_output=True, text=True, timeout=180, env=env)
+    except subprocess.TimeoutExpired as exc:
+        raise GitFailure(args[0], remote_name, None, 'Git timeout after 180 seconds.\n' + redact_git_output(exc.stderr)) from None
+    except OSError:
+        raise GitFailure(args[0], remote_name, None, 'Git executable could not be started. Check installation and file permissions.') from None
     if check and result.returncode:
-        raise GitFailure(args[0])
+        raise GitFailure(args[0], remote_name, result.returncode, result.stderr)
     return result
 
 
@@ -74,7 +113,7 @@ def validate_config(config):
     names = set()
     claimed = set()
     for repo in repos:
-        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed'}:
+        if not isinstance(repo, dict) or set(repo) - {'name', 'enabled', 'remotes', 'webhook_secret_env', 'direction', 'source', 'policy', 'branches', 'tags', 'interval', 'remote_providers', 'force_confirmed', 'create_missing', 'create_private'}:
             raise ValueError('Invalid repository fields')
         name = repo.get('name', '')
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', name) or name in names:
@@ -102,6 +141,14 @@ def validate_config(config):
         providers = repo.get('remote_providers', {})
         if not isinstance(providers, dict) or set(providers) - set(remotes) or any(not isinstance(x, str) for x in providers.values()):
             raise ValueError('Ungültige Provider-Zuordnung')
+        for option in ('create_missing', 'create_private'):
+            if type(repo.get(option, option == 'create_private')) is not bool:
+                raise ValueError('Invalid automatic repository creation setting')
+        if repo.get('create_missing'):
+            if repo.get('source') not in remotes:
+                raise ValueError('Select the source remote before enabling automatic creation')
+            if any(not providers.get(remote) for remote in remotes if remote != repo['source']):
+                raise ValueError('Automatic creation requires a provider for every target remote')
         profile_urls = set()
         secret = repo.get('webhook_secret_env', '')
         if not isinstance(secret, str) or (secret and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', secret)):
@@ -141,6 +188,8 @@ def save_config(config):
             for remote, identifier in repo.get('remote_providers', {}).items():
                 provider = control().provider(identifier)
                 url = urlsplit(repo['remotes'][remote])
+                if repo.get('create_missing') and remote != repo['source']:
+                    management.Control.repository_path(provider, repo['remotes'][remote])
                 if url.scheme == 'https' and url.netloc != urlsplit(provider['url']).netloc:
                     raise ValueError('Remote-URL passt nicht zum zugeordneten Provider')
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +226,22 @@ def synchronize(repo):
     if not (path / 'HEAD').exists():
         git(path, 'init', '--bare')
     snapshots = {}
-    for remote, url in repo['remotes'].items():
+    created = []
+    remotes = list(repo['remotes'].items())
+    if repo.get('create_missing'):
+        if repo.get('source') not in repo['remotes']:
+            raise ValueError('Automatic creation requires a source remote')
+        # Fetch the source successfully before making any provider-side changes.
+        remotes.sort(key=lambda item: item[0] != repo['source'])
+    for remote, url in remotes:
+        if repo.get('create_missing') and remote != repo['source']:
+            identifier = repo.get('remote_providers', {}).get(remote)
+            if not identifier:
+                raise ValueError('Automatic creation requires a target provider')
+            if control().ensure_repository(identifier, url, repo.get('create_private', True)):
+                created.append(remote)
+                if hasattr(GIT_CONTEXT, 'created'):
+                    GIT_CONTEXT.created.append(remote)
         if git(path, 'remote', 'get-url', remote, check=False).returncode:
             git(path, 'remote', 'add', remote, url)
         else:
@@ -223,14 +287,14 @@ def synchronize(repo):
                 continue
             plan.append((remote, ref, winner, old))
     if conflicts and policy == 'reject':
-        return 'conflict', {'updated': [], 'conflicts': conflicts, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
+        return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
     for remote, ref, winner, old in plan:
         args = ['push']
         if policy == 'force-with-lease':
             args.append(f'--force-with-lease=refs/{ref}:{old or ""}')
         git(path, *args, remote, f'{winner}:refs/{ref}')
         actions.append(f'{remote}: {ref} -> {winner[:12]}')
-    return ('conflict' if conflicts else 'success'), {'updated': actions, 'conflicts': conflicts}
+    return ('conflict' if conflicts else 'success'), {'updated': actions, 'conflicts': conflicts, 'created_repositories': created}
 
 
 def prepare_credentials(repo):
@@ -249,14 +313,22 @@ def prepare_credentials(repo):
 
 def execute_profile(repo):
     GIT_CONTEXT.credentials = prepare_credentials(repo)
+    GIT_CONTEXT.created = []
     try:
         status, details = synchronize(repo)
         with database() as db:
             db.execute('INSERT INTO runs(time, repository, status, details) VALUES(?,?,?,?)',
                        (time.time(), repo['name'], status, json.dumps(details)))
         return status, details
+    except Exception as exc:
+        if GIT_CONTEXT.created:
+            details = getattr(exc, 'details', {'message': 'Sync failed after repository creation'})
+            details['created_repositories'] = list(GIT_CONTEXT.created)
+            exc.details = details
+        raise
     finally:
         GIT_CONTEXT.credentials = {}
+        GIT_CONTEXT.created = []
 
 
 

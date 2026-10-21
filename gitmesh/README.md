@@ -15,7 +15,7 @@ Eigener Sync-Manager für GitHub, GitLab und Forgejo/Gitea mit deutscher Webober
 4. [Webinterface öffnen](http://localhost:8088). Unter **Ersteinrichtung mit Admin-Token** verbinden.
 5. Unter **Benutzer** einen persönlichen Administrator mit einem Passwort von mindestens 12 Zeichen anlegen. Anschließend abmelden und regulär anmelden. Der Bootstrap-Token bleibt als Administratorzugang für die Wiederherstellung verfügbar.
 6. Unter **Provider** Instanzen und Zugangsdaten anlegen, danach **Verbindung testen**.
-7. Unter **Discovery** Repositories suchen oder unter **Sync-Profile** manuell Profile anlegen. Ziel-Repositories müssen bereits existieren. Discovery-Importe sind zunächst deaktivierte Entwürfe.
+7. Unter **Discovery** Repositories suchen oder unter **Sync-Profile** manuell Profile anlegen. Ziel-Repositories müssen existieren oder im Profil die automatische Anlage aktivieren. Discovery-Importe sind zunächst deaktivierte Entwürfe.
 8. Remotes zuordnen, Einstellungen prüfen, Profil aktivieren und speichern. Automatische Läufe beginnen mit kurzem Startversatz. Mit Intervall **0** läuft ein Profil nur manuell oder per Webhook.
 
 Die Standardbindung ist ausschließlich localhost. Für externen Zugriff HTTPS-Reverse-Proxy mit Request-, Verbindungs- und Zeitlimits verwenden. Keine TLS-Prüfung wird abgeschaltet.
@@ -115,4 +115,15 @@ Optional: `GITMESH_TEST_GIT` setzt die Git-Binärdatei für Tests; `GITMESH_PLAY
 
 ## Grenzen
 
-Keine automatische Anlage von Remote-Repositories oder Webhooks, keine OAuth-/SSO-Anmeldung, keine Worker-Gruppen oder unabhängigen Worker-Prozesse. Keine Issues, Pull Requests, Releases, Wikis, Git Notes, speziellen Forge-Refs oder Git-LFS-Objekte. Submodule übertragen nur Git-Verweise; ihre Repositories benötigen eigene Profile. Einweg-Sync ist keine vollständige Mirror-Löschung.
+Keine automatische Anlage von Webhooks oder Organisationen/Gruppen, keine OAuth-/SSO-Anmeldung, keine Worker-Gruppen oder unabhängigen Worker-Prozesse. Keine Issues, Pull Requests, Releases, Wikis, Git Notes, speziellen Forge-Refs oder Git-LFS-Objekte. Submodule übertragen nur Git-Verweise; ihre Repositories benötigen eigene Profile. Einweg-Sync ist keine vollständige Mirror-Löschung.
+
+
+## Fehlende Ziel-Repositories automatisch anlegen
+
+Unter **Sync-Profile** pro Profil **Fehlende Ziel-Repositories automatisch anlegen** aktivieren und speichern. Den **Quell-/Start-Remote** festlegen und jedem anderen Remote einen gespeicherten Provider mit API-Token zuordnen. Die Ziel-URL bestimmt Besitzer bzw. Namespace und Repository-Namen. Standard ist **privat**; die Sichtbarkeit kann vor dem Anlegen explizit auf oeffentlich umgestellt werden.
+
+GitMesh liest zuerst die Quelle erfolgreich ein, prueft dann die Ziele per API und legt ausschliesslich bei HTTP 404 ein leeres Repository an. Keine README, Lizenz oder .gitignore und kein fremder Start-Commit. Bestehende Repositories werden weder neu angelegt noch in ihrer Sichtbarkeit veraendert. Die Quelle wird nie automatisch angelegt. Angelegte Ziele erscheinen im Job-Feld `created_repositories`; bei spaeteren Fehlern bleiben diese Repositories erhalten.
+
+Unterstuetzt werden Forgejo/Gitea und GitHub (eigenes Konto oder bestehende Organisation) sowie GitLab (bestehender Benutzer-/Gruppen-Namespace, auch Untergruppen). Fuer fremde persoenliche Konten werden keine administrativen Create-Endpunkte verwendet. Organisationen, Gruppen und Untergruppen muessen bereits existieren. Das API-Token braucht zusaetzlich zum Git-Push die Berechtigung zum Anlegen von Repositories im Ziel-Namespace. Bei 401/403 oder Netzwerkfehlern wird kein Create-Versuch ausgeloest. Gleichzeitige Anlage durch andere Prozesse wird durch erneutes Nachsehen abgefangen. Wiederholte Laeufe veraendern vorhandene Repositories nicht.
+
+Die Option ist auch im bidirektionalen Modus moeglich: Der ausgewaehlte Start-Remote wird zuerst gelesen, alle anderen Remotes gelten fuer die Anlage als Ziele. Ohne aktivierte Option bleibt das bisherige Verhalten unveraendert.

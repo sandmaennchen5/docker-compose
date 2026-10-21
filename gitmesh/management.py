@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode, urlsplit, unquote
 from urllib.request import Request, HTTPRedirectHandler, build_opener
 from cryptography.fernet import Fernet
 
@@ -22,7 +22,11 @@ IDENTIFIER = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}')
 
 
 class ProviderError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+        self.details = {'message': message, 'http_status': status}
+        self.retryable = status not in (400, 401, 403, 404, 422)
 
 
 class RateLimited(ProviderError):
@@ -162,7 +166,7 @@ class Control:
         with self.db() as db:
             db.execute('DELETE FROM providers WHERE id=?', (identifier,))
 
-    def api(self, provider, path, query=None):
+    def api(self, provider, path, query=None, *, method='GET', body=None):
         url = provider['url']
         if provider['kind'] == 'github':
             base = 'https://api.github.com' if url == 'https://github.com' else url + '/api/v3'
@@ -174,7 +178,10 @@ class Control:
                 headers['PRIVATE-TOKEN'] = provider['token']
             else:
                 headers['Authorization'] = ('Bearer ' if provider['kind'] == 'github' else 'token ') + provider['token']
-        request = Request(base + path + ('?' + urlencode(query) if query else ''), headers=headers)
+        data = json.dumps(body).encode() if body is not None else None
+        if data is not None:
+            headers['Content-Type'] = 'application/json'
+        request = Request(base + path + ('?' + urlencode(query) if query else ''), headers=headers, data=data, method=method)
         try:
             with build_opener(NoRedirect()).open(request, timeout=20) as response:
                 payload = response.read(4 * 1024 * 1024 + 1)
@@ -183,9 +190,69 @@ class Control:
                 return json.loads(payload)
         except HTTPError as exc:
             exc.close()
-            raise ProviderError('Provider-API antwortet mit HTTP ' + str(exc.code)) from None
+            raise ProviderError('Provider-API antwortet mit HTTP ' + str(exc.code), exc.code) from None
         except (URLError, TimeoutError, ValueError, OSError):
             raise ProviderError('Provider-API nicht erreichbar oder ungültige Antwort') from None
+
+    @staticmethod
+    def repository_path(provider, clone_url):
+        parsed, base = urlsplit(clone_url), urlsplit(provider['url'])
+        if parsed.scheme not in ('https', 'ssh') or parsed.hostname != base.hostname or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError('Ziel-URL passt nicht zum Provider')
+        if parsed.scheme == 'https' and (parsed.netloc != base.netloc or parsed.username):
+            raise ValueError('Ziel-URL passt nicht zum Provider')
+        path, prefix = unquote(parsed.path), unquote(base.path).rstrip('/')
+        if prefix:
+            if path.startswith(prefix + '/'):
+                path = path[len(prefix):]
+            elif parsed.scheme == 'https':
+                raise ValueError('Ziel liegt ausserhalb des Provider-Basispfads')
+        parts = path.strip('/').removesuffix('.git').split('/')
+        if len(parts) < 2 or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', part) or part in ('.', '..') for part in parts):
+            raise ValueError('Ziel-URL muss Namespace/Repository enthalten')
+        if provider['kind'] != 'gitlab' and len(parts) != 2:
+            raise ValueError('Dieser Provider erwartet Besitzer/Repository')
+        return '/'.join(parts[:-1]), parts[-1]
+
+    def ensure_repository(self, identifier, clone_url, private=True):
+        provider = self.provider(identifier, reveal=True)
+        owner, name = self.repository_path(provider, clone_url)
+        if not provider['token']:
+            raise ProviderError('Automatische Repository-Anlage benoetigt einen Provider mit API-Token')
+        full_name = owner + '/' + name
+        lookup = '/projects/' + quote(full_name, safe='') if provider['kind'] == 'gitlab' else '/repos/' + quote(owner, safe='') + '/' + quote(name, safe='')
+        try:
+            self.api(provider, lookup)
+            return False
+        except ProviderError as exc:
+            if exc.status != 404:
+                raise
+        if provider['kind'] == 'gitlab':
+            namespace = self.api(provider, '/namespaces/' + quote(owner, safe=''))
+            if namespace.get('full_path') != owner or type(namespace.get('id')) is not int:
+                raise ProviderError('GitLab-Namespace konnte nicht eindeutig zugeordnet werden')
+            endpoint = '/projects'
+            body = {'name': name, 'path': name, 'namespace_id': namespace['id'],
+                    'visibility': 'private' if private else 'public', 'initialize_with_readme': False}
+        else:
+            user = self.api(provider, '/user')
+            login = user.get('login') or user.get('username')
+            if not isinstance(login, str):
+                raise ProviderError('Provider-Konto konnte nicht ermittelt werden')
+            endpoint = '/user/repos' if login.casefold() == owner.casefold() else '/orgs/' + quote(owner, safe='') + '/repos'
+            body = {'name': name, 'private': private, 'auto_init': False}
+        try:
+            self.api(provider, endpoint, method='POST', body=body)
+        except ProviderError as exc:
+            # Another creator, or a lost response: verify existence instead of modifying it.
+            if exc.status in (400, 409, 422):
+                try:
+                    self.api(provider, lookup)
+                    return False
+                except ProviderError:
+                    pass
+            raise
+        return True
 
     def test_provider(self, identifier):
         provider = self.provider(identifier, reveal=True)
@@ -430,6 +497,7 @@ class Worker:
 
     def work(self, job, repo):
         attempts = 0
+        created_repositories = set()
         try:
             while attempts < 3:
                 attempts += 1
@@ -437,13 +505,18 @@ class Worker:
                     db.execute('UPDATE jobs SET attempts=? WHERE id=?', (attempts, job['id']))
                 try:
                     status, details = self.execute(repo)
+                    created_repositories.update(details.get('created_repositories', []))
                     break
                 except Exception as exc:
-                    status, details = 'error', {'message': type(exc).__name__ + ': Sync fehlgeschlagen. Verbindung, Rechte und Zugangsdaten prüfen.'}
+                    status = 'error'
+                    details = getattr(exc, 'details', None) or {'message': type(exc).__name__ + ': Sync fehlgeschlagen. Verbindung, Rechte und Zugangsdaten prüfen.'}
+                    created_repositories.update(details.get('created_repositories', []))
                     if not getattr(exc, 'retryable', True):
                         break
                     if attempts < 3:
                         self.stop_event.wait(2 ** (attempts - 1))
+            if created_repositories:
+                details['created_repositories'] = sorted(created_repositories)
             self.control.finish(job['id'], status, details, attempts)
         finally:
             with self.gate:
