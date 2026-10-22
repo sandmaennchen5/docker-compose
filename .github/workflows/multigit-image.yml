@@ -151,7 +151,7 @@ jobs:
           python multigit/version_report.py --image "$IMAGE" --digest "$DIGEST" --revision "$REVISION" --ref "$REF_NAME"
           cat multigit/versions.yaml
       - name: Upload version report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: multigit-versions-${{ github.run_id }}
           path: multigit/versions.yaml
