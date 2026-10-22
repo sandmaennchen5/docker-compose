@@ -103,6 +103,7 @@ function clearSession() {
   clearTimeout(saveNoticeTimer); el('save-progress').hidden = true;
   openedJobDetails.clear(); openedMappings.clear(); openedConflictValues.clear();
   el('conflict-list').replaceChildren(); el('conflict-other').replaceChildren(); el('conflict-comparison').replaceChildren(); el('conflict-inventory-list').replaceChildren();
+  mappingPaused = true; mappingReport = null; mappingPair = null; mappingBatchRemaining = []; mappingBatchReports = []; el('pair-confirm').disabled = true; el('pair-values').textContent = ''; el('mapping-results').replaceChildren(); el('mapping-progress').textContent = '';
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
   for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'authorship-form', 'shared-form', 'group-form']) el(id).reset();
@@ -922,3 +923,104 @@ saveForm('transport-form', async () => {
     message('Transport gespeichert.');
   } finally { el('transport-key').value = ''; }
 });
+
+let mappingReport = null, mappingPaused = true, mappingBusy = false, mappingShown = 200, mappingBatchRemaining = [], mappingBatchReports = [];
+function renderMappingReport() {
+  const report = mappingReport, root = el('mapping-results'); root.replaceChildren();
+  if (!report) return;
+  el('mapping-progress').textContent = (mappingBatchReports.length ? mappingBatchReports.length + ' Profile abgeschlossen. ' : '') + report.profile + ': ' + report.processed + ' API-Seiten geladen, ' + report.pending + ' offen. ' + (report.done ? JSON.stringify(report.summary) : mappingPaused ? 'Pausiert.' : 'Pruefung laeuft.');
+  el('mapping-resume').disabled = mappingBusy || (report.done && !mappingBatchRemaining.length);
+  el('mapping-pause').disabled = !mappingBusy;
+  el('mapping-download').disabled = false;
+  const filter = el('mapping-filter').value;
+  let shown = 0;
+  for (const [index, row] of report.results.entries()) {
+    if (filter && row.status !== filter) continue;
+    if (++shown > mappingShown) { root.append(button('Weitere Befunde anzeigen', () => { mappingShown += 200; renderMappingReport(); })); break; }
+    const card = node('article', '', 'card');
+    card.append(node('strong', row.status + ' · ' + row.category + ' · ' + row.remote + ' · ' + (row.name || row.key || row.item || 'Zuordnung')), node('p', row.reason));
+    if (row.values) {
+      const columns = node('div', '', 'grid');
+      for (const [remote, value] of Object.entries(row.values)) {
+        const side = node('div'); side.append(node('strong', remote), node('p', value ? value.name + ' · Kennung ' + value.key + ' · ID ' + value.id + ' · ' + (value.state || 'Kein Status') : 'Fehlt / nicht sichtbar')); columns.append(side);
+      }
+      card.append(columns);
+    }
+    if (row.url) { try { const url = new URL(row.url); if (['https:', 'http:'].includes(url.protocol)) { const a = node('a', 'Auf Plattform oeffnen'); a.href = url.href; a.target = '_blank'; a.rel = 'noopener noreferrer'; card.append(a); } } catch {} }
+    if (row.source && row.target_key && !['identity', 'mapping', 'authorship'].includes(row.category)) card.append(button('Im Objektvergleich pruefen', () => {
+      el('conflict-profile').value = report.profile; updateConflictTarget(); el('conflict-category').value = row.category; el('conflict-target').value = row.remote;
+      // Object IDs and provider-local numbers differ: load the inventories before choosing.
+      el('conflict-source-key').value = ''; el('conflict-target-key').value = row.target_key;
+      el('conflict-compare').scrollIntoView({behavior: 'smooth'}); message('Quelle: ID ' + row.source_id + '. Mit Objekte laden die passende Nummer waehlen.');
+    }));
+    if (row.scope && row.item && row.target_key) for (const [action, text] of [['ignore', 'Ignorieren'], ['unlink', 'Verknuepfung loesen und sperren']]) card.append(button(text, () => runSave(null, async () => {
+      if (!confirm(text + '? Keine Remote-Objekte werden geloescht. Der automatische Abgleich dieses Eintrags wird gesperrt.')) return;
+      const result = await request('/api/mappings/repair', 'POST', {profile:report.profile,audit_id:report.id,index,action}); message(result.message);
+      row.status = 'ignored'; row.reason = result.message; renderMappingReport();
+    })));
+    root.append(card);
+  }
+}
+async function continueMappingAudit() {
+  if (!mappingReport || mappingBusy || (mappingReport.done && !mappingBatchRemaining.length)) return;
+  const sessionToken = token; mappingBusy = true; mappingPaused = false;
+  try {
+    while (!mappingPaused && token === sessionToken) {
+      if (mappingReport.done) {
+        if (!mappingBatchRemaining.length) break;
+        mappingBatchReports.push(mappingReport);
+        const next = await request('/api/mappings/start','POST',{profile:mappingBatchRemaining.shift()});
+        if (token !== sessionToken) return;
+        mappingReport = next;
+      }
+      renderMappingReport();
+      const result = await request('/api/mappings/step', 'POST', {profile:mappingReport.profile,audit_id:mappingReport.id,git:true});
+      if (token !== sessionToken) return;
+      mappingReport = result;
+      if (result.paused) { mappingPaused = true; message(result.message); }
+    }
+  } catch (error) { mappingPaused = true; showError(error); }
+  finally { mappingBusy = false; if (token === sessionToken) renderMappingReport(); }
+}
+el('mapping-start').addEventListener('click', () => runSave(null, async () => {
+  if (mappingBusy) throw new Error('Laufende Diagnose zuerst pausieren.');
+  const profile = el('conflict-profile').value;
+  mappingPair = null; mappingBatchRemaining = []; mappingBatchReports = []; el('pair-confirm').disabled = true; mappingShown = 200;
+  mappingReport = await request('/api/mappings/start', 'POST', {profile});
+  renderMappingReport(); void continueMappingAudit();
+}).catch(showError));
+el('mapping-resume').addEventListener('click', () => continueMappingAudit().catch(showError));
+el('mapping-pause').addEventListener('click', () => { mappingPaused = true; message('Pause nach der aktuellen API-Seite.'); });
+el('mapping-filter').addEventListener('change', () => { mappingShown = 200; renderMappingReport(); });
+el('mapping-download').addEventListener('click', () => {
+  if (!mappingReport) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(mappingBatchReports.length ? [...mappingBatchReports,mappingReport] : mappingReport,null,2)], {type:'application/json'}));
+  const a = document.createElement('a'); a.href = url; a.download = 'gitmesh-zuordnungen-' + mappingReport.profile + '.json'; a.click(); URL.revokeObjectURL(url);
+});
+
+let mappingPair = null;
+el('mapping-latest').addEventListener('click', () => runSave(null, async () => {
+  if (mappingBusy) throw new Error('Diagnose zuerst pausieren.');
+  mappingReport = await request('/api/mappings/report','POST',{profile:el('conflict-profile').value}); mappingPaused = true; renderMappingReport();
+}).catch(showError));
+el('mapping-pair').addEventListener('input', () => { mappingPair = null; el('pair-confirm').disabled = true; });
+saveForm('mapping-pair', async () => {
+  if (!mappingReport?.done) throw new Error('Diagnose zuerst abschliessen.');
+  const body = {profile:mappingReport.profile,audit_id:mappingReport.id,category:el('pair-category').value,source:el('pair-source').value,target:el('pair-target').value,
+    source_key:el('pair-source-key').value,target_key:el('pair-target-key').value,source_ticket:el('pair-source-ticket').value,target_ticket:el('pair-target-ticket').value};
+  const preview = await request('/api/mappings/pair-preview','POST',body); mappingPair = {...body,confirmation:preview.confirmation};
+  el('pair-values').textContent = JSON.stringify(preview.versions,null,2); el('pair-confirm').disabled = false;
+});
+el('pair-confirm').addEventListener('click', () => runSave(null,async () => {
+  if (!mappingPair || !confirm('Diese beiden Objekte verknuepfen? Keine Remote-Inhalte werden jetzt veraendert. Unterschiede vor dem naechsten Sync pruefen.')) return;
+  const result=await request('/api/mappings/pair-apply','POST',mappingPair); mappingPair=null; el('pair-confirm').disabled=true; message(result.message);
+}).catch(showError));
+
+el('mapping-all').addEventListener('click', () => runSave(null,async () => {
+  if (mappingBusy) throw new Error('Laufende Diagnose zuerst pausieren.');
+  const profiles=(latest?.repositories || []).map(r => r.name);
+  if (!profiles.length) throw new Error('Keine gespeicherten Profile.');
+  mappingPair=null; el('pair-confirm').disabled=true; mappingShown=200; mappingBatchReports=[];
+  mappingBatchRemaining=profiles.slice(1);
+  mappingReport=await request('/api/mappings/start','POST',{profile:profiles[0]}); renderMappingReport(); void continueMappingAudit();
+}).catch(showError));

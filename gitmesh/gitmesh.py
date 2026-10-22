@@ -26,6 +26,7 @@ import metadata
 import authorship
 import conflicts as conflict_store
 import reconciliation
+import mapping_audit
 import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -598,6 +599,18 @@ def _repository_action(action, body, actor):
             result = tools.change_ref(repo, body)
         elif action == 'merge':
             result = tools.merge(repo, body)
+        elif action == 'mappings/start':
+            return mapping_audit.start(control(), repo)
+        elif action == 'mappings/step':
+            return mapping_audit.step(control(), repo, body, tools)
+        elif action == 'mappings/report':
+            return mapping_audit.public(mapping_audit.load(control(), repo, body['audit_id'])) if body.get('audit_id') else mapping_audit.latest(control(), repo)
+        elif action == 'mappings/pair-preview':
+            return mapping_audit.pair(control(), repo, body)
+        elif action == 'mappings/pair-apply':
+            result = mapping_audit.pair(control(), repo, body, apply=True)
+        elif action == 'mappings/repair':
+            result = mapping_audit.repair(control(), repo, body, actor['name'])
         elif action == 'conflicts/resume':
             result = reconciliation.resume_hold(control(), repo, body)
         elif action == 'conflicts/inventory':
@@ -760,7 +773,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if actor['role'] != 'admin':
             return self.reply(403, {'error': 'Lesebenutzer dürfen keine Änderungen vornehmen'})
-        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve', '/api/conflicts/compare', '/api/conflicts/inventory', '/api/conflicts/resume'):
+        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve', '/api/conflicts/compare', '/api/conflicts/inventory', '/api/conflicts/resume', '/api/mappings/start', '/api/mappings/step', '/api/mappings/report', '/api/mappings/repair', '/api/mappings/pair-preview', '/api/mappings/pair-apply'):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if self.path == '/api/settings':
             if not save_config(body):

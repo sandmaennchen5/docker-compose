@@ -479,6 +479,18 @@ async function main() {
     });
     await page.locator('[data-page=conflicts]').click();
     await page.locator('#page-conflicts').waitFor({state: 'visible'});
+    const auditFixture = {id:'audit-test',profile:settings.repositories[0].name,started:1,updated:2,done:false,processed:0,pending:1,results:[],summary:{},errors:[]};
+    await page.route('**/api/mappings/start', route => route.fulfill({json:auditFixture}));
+    await page.route('**/api/mappings/step', route => route.fulfill({json:{...auditFixture,done:true,processed:1,pending:0,summary:{ok:0,conflict:1,not_checked:0},results:[{status:'conflict',category:'milestones',remote:'target',name:'4.1.1',reason:'Kopiermarkierung ohne gespeicherte Zuordnung',values:{source:{name:'4.1.1',id:'15',key:'5',state:'open'},target:null}}]}}));
+    await page.locator('#mapping-start').click();
+    await page.locator('#mapping-progress').filter({hasText:'"conflict":1'}).waitFor();
+    assert.ok((await page.locator('#mapping-results').textContent()).includes('4.1.1'));
+    assert.ok((await page.locator('#mapping-results').textContent()).includes('Fehlt / nicht sichtbar'));
+    await page.locator('#mapping-filter').selectOption('ok'); assert.equal(await page.locator('#mapping-results article').count(),0);
+    await page.locator('#mapping-filter').selectOption('conflict'); assert.equal(await page.locator('#mapping-results article').count(),1);
+    assert.equal(await page.locator('#mapping-download').isEnabled(),true);
+    await page.unroute('**/api/mappings/start'); await page.unroute('**/api/mappings/step');
+
     await page.locator('#conflict-inventory').click();
     await page.waitForFunction(() => activeSave === null);
     await page.locator('#conflict-inventory-list').getByRole('button', {name: '15 · Example issue', exact: true}).click();
@@ -512,6 +524,7 @@ async function main() {
     assert.equal(await page.locator('[data-page=groups]').isVisible(), false);
     await page.locator('[data-page=conflicts]').click();
     assert.equal(await page.locator('#conflict-compare').isVisible(), false);
+    assert.equal(await page.locator('#mapping-start').isVisible(), false);
     await page.locator('[data-page=providers]').click();
     assert.equal(await page.locator('#transport-form').isVisible(), false);
     assert.equal(await page.locator('#authorship-form').isVisible(), false);

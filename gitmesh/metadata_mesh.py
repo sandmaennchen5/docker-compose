@@ -167,6 +167,10 @@ class MetadataMesh:
             edges = [dict(r) for r in db.execute('SELECT * FROM metadata_mesh WHERE mesh=? AND category=?', (self.key, category))]
         names = {key: name for name, key in self.peer_keys.items()}
         edges = [dict(r, remote=names[r['remote']]) for r in edges if r['remote'] in names]
+        edge_owners = {}
+        for edge in edges:
+            edge_owners.setdefault((edge['remote'], edge['item']), set()).add(edge['origin'])
+        ambiguous_origins = set().union(*(origins for origins in edge_owners.values() if len(origins) > 1)) if edge_owners else set()
         owners = {(r['remote'], r['item']): r['origin'] for r in edges}
         snapshots = {(r['origin'], r['remote']): json.loads(r['snapshot']) for r in edges}
         owners.update({k: v for k, v in legacy.items() if k not in owners})
@@ -190,9 +194,19 @@ class MetadataMesh:
                 groups[matches[0]][remote] = row
             else:
                 blocked_remotes.add(remote)
-                self.conflict(category, remote + ':' + identifier)
+                ambiguous_origins.update(matches)
+                self.e.target = remote
+                self.e.record(category.split(':')[0], 'conflict', remote + ':' + identifier,
+                              name=row.get('title', self.ticket_context or 'Kommentar'),
+                              url=row.get('html_url') or row.get('web_url') or '',
+                              reason='Kopiermarkierung vorhanden, aber kein eindeutiger Ursprung im aktuellen Profil. Gespeicherte Zuordnung und Original vergleichen; kein automatisches Ueberschreiben.',
+                              marker_ids=re.findall(r'<!-- gitmesh(?:-mesh)?:([a-f0-9]+) -->', body))
+                self.e.result['warnings'].append('Nicht zugeordnete Kopie: ' + category.split(':')[0] + ' / ' + row.get('title', self.ticket_context or 'Kommentar'))
         all_collections = collections
         for origin, members in groups.items():
+            if origin in ambiguous_origins:
+                self.conflict(category, origin)
+                continue
             collections = dict(all_collections)
             if self.source in members:
                 source_id = str(members[self.source]['id'])
@@ -254,10 +268,20 @@ class MetadataMesh:
                         rows[remote].append(item)
                         status = 'created'
                     elif values[remote] != desired:
-                        path = collection if kind == 'gitlab' or category == 'milestones' else '/issues/comments'
-                        item = self.api(remote, path + '/' + quote(str(self.identifier(category, remote, item)), safe=''), 'PUT' if kind == 'gitlab' else 'PATCH', fields, writer=writer)
-                        members[remote] = item
-                        status = 'updated'
+                        if category == 'milestones':
+                            # A state-only edit must not depend on unrelated title,
+                            # description or deadline validation succeeding first.
+                            changed_fields = {}
+                            for key in ('title', 'description', 'due'):
+                                if values[remote][key] != desired[key]:
+                                    field = ('due_date' if kind == 'gitlab' else 'due_on') if key == 'due' else key
+                                    changed_fields[field] = fields[field]
+                            fields = changed_fields
+                        if fields:
+                            path = collection if kind == 'gitlab' or category == 'milestones' else '/issues/comments'
+                            item = self.api(remote, path + '/' + quote(str(self.identifier(category, remote, item)), safe=''), 'PUT' if kind == 'gitlab' else 'PATCH', fields, writer=writer)
+                            members[remote] = item
+                            status = 'updated'
                     if provenance:
                         if writer is None and remote != origin_remote and peer['provider']['id'] in self.authors.rules and not self.authors.stored(peer['provider'], peer['root'], 'comments', item):
                             writer = self.authors.writer(peer['provider'], peer['root'], 'comments', item, provenance)
@@ -302,7 +326,7 @@ class MetadataMesh:
             if self.source in members:
                 for remote, item in members.items():
                     self.milestone_maps[remote][members[self.source]['id']] = item
-                    if remote != self.source:
+                    if remote != self.source and not reconciliation.held(self.store,self.scope(remote),'milestones:'+str(members[self.source]['id'])):
                         self.e.scope = self.scope(remote)
                         self.e.remember('milestones', members[self.source]['id'], self.identifier('milestones', remote, item), '')
 
@@ -354,6 +378,6 @@ class MetadataMesh:
                         continue
                     identity = ('pr:' if pull else 'issue:') + str(ticket['id']) + ':' + str(members[self.source]['id'])
                     for remote, note in members.items():
-                        if remote != self.source:
+                        if remote != self.source and not reconciliation.held(self.store,self.scope(remote),'comments:'+identity):
                             self.e.scope = self.scope(remote)
                             self.e.remember('comments', identity, note['id'], '')

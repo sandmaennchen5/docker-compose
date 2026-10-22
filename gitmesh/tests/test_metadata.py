@@ -74,6 +74,41 @@ class MetadataTests(unittest.TestCase):
         self.api.start()
         self.addCleanup(self.api.stop)
 
+    def test_duplicate_issue_markers_pause_without_writes(self):
+        self.setup_api('github', 'forgejo')
+        self.assertEqual(metadata.MetadataSync(self.store).sync(self.repo, self.refs)['errors'], [])
+        duplicate = copy.deepcopy(self.values['issues'][0])
+        duplicate.update(id=900, number=900)
+        self.values['issues'].append(duplicate)
+        self.issue['body'] = 'Changed source'
+        self.writes.clear()
+        result = metadata.MetadataSync(self.store).sync(self.repo, self.refs)
+        self.assertGreater(result['counts'].get('conflict', 0), 0)
+        self.assertEqual(self.writes, [])
+
+    def test_duplicate_comment_markers_pause_without_writes(self):
+        self.setup_api('github', 'forgejo')
+        metadata.MetadataSync(self.store).sync(self.repo, self.refs)
+        duplicate = copy.deepcopy(self.values['comments'][0]); duplicate['id'] = 900
+        self.values['comments'].append(duplicate)
+        self.note['body'] = 'Changed note'
+        self.writes.clear()
+        result = metadata.MetadataSync(self.store).sync(self.repo, self.refs)
+        self.assertGreater(result['counts'].get('conflict', 0), 0)
+        self.assertEqual(self.writes, [])
+
+    def test_two_source_ids_cannot_write_to_same_target(self):
+        self.setup_api('github', 'forgejo')
+        metadata.MetadataSync(self.store).sync(self.repo, self.refs)
+        with self.store.db() as db:
+            row = db.execute("SELECT scope,target FROM metadata_links WHERE item='issues:3'").fetchone()
+            db.execute('INSERT INTO metadata_links VALUES(?,?,?,?)', (row['scope'], 'issues:900', row['target'], ''))
+        self.issue['body'] = 'Changed source'
+        self.writes.clear()
+        result = metadata.MetadataSync(self.store).sync(self.repo, self.refs)
+        self.assertGreater(result['counts'].get('conflict', 0), 0)
+        self.assertEqual(self.writes, [])
+
     def test_all_provider_pairs_create_repeat_edit_comment_and_close(self):
         for source in ('github', 'forgejo', 'gitlab'):
             for target in ('github', 'forgejo', 'gitlab'):

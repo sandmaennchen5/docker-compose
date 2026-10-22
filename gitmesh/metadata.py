@@ -33,6 +33,17 @@ class MetadataSync(ReleaseSync):
         with self.store.db() as db:
             db.execute('INSERT OR REPLACE INTO metadata_links VALUES (?,?,?,?)', (self.scope, category + ':' + str(identity), str(target), signature))
 
+    def unique_marker(self, category, identity, rows, body_key='body'):
+        marker = self.marker(category, identity)
+        matches = [row for row in rows if marker in (row.get(body_key) or '')]
+        if len(matches) > 1:
+            self._review_seen.add(category + ':' + str(identity))
+            self.record(category, 'conflict', identity,
+                        reason='Mehrere Zieleintraege tragen dieselbe Kopiermarkierung; keine automatische Auswahl.',
+                        candidates=[str(row.get('number', row.get('iid', row.get('id')))) for row in matches])
+            return None, False
+        return (matches[0] if matches else None), True
+
     def record(self, category, status, identity, **details):
         self.result['counts'][status] = self.result['counts'].get(status, 0) + 1
         if len(self.result['items']) < 200:
@@ -65,6 +76,14 @@ class MetadataSync(ReleaseSync):
         identifier = identifier or (lambda x: x.get('iid', x.get('number', x.get('id'))))
         row = self.mapping(category, identity)
         self._review_seen.add(category + ':' + str(identity))
+        target_id = row['target'] if row else str(identifier(existing)) if existing is not None else None
+        if target_id is not None:
+            with self.store.db() as db:
+                links = db.execute('SELECT item FROM metadata_links WHERE scope=? AND target=?', (self.scope, str(target_id))).fetchall()
+            others = [r['item'] for r in links if r['item'].split(':', 1)[0] == category and r['item'] != category + ':' + str(identity)]
+            if others:
+                self.record(category, 'conflict', identity, reason='Mehrere Quelleintraege sind demselben Zieleintrag zugeordnet; Abgleich ausgesetzt.', target_item=str(target_id), conflicting_items=others)
+                return None, False
         if reconciliation.held(self.store, self.scope, category + ':' + str(identity)):
             self.record(category, 'skipped', identity, reason='Eintrag durch Entscheidung ignoriert')
             return existing, False
@@ -178,8 +197,16 @@ class MetadataSync(ReleaseSync):
                 self.result['warnings'].append('Vertrauliches Issue ohne passenden Zielstatus uebersprungen')
                 continue
             identity = row['id']
+            if reconciliation.held(self.store,self.scope,category+':'+str(identity)):
+                self._review_seen.add(category+':'+str(identity))
+                self._blocked_tickets.add((self.target,category,str(identity)))
+                self.record(category,'skipped',identity,reason='Eintrag durch Entscheidung gesperrt; keine automatische Wiederverknuepfung')
+                continue
             marker = self.marker(category, identity)
-            existing = next((x for x in targets if marker in (x.get(body_key) or '')), None)
+            existing, unique = self.unique_marker(category, identity, targets, body_key)
+            if not unique:
+                self._blocked_tickets.add((self.target, category, str(identity)))
+                continue
             link = self.mapping(category, identity)
             if existing and not link:
                 self.remember(category, identity, self.number(existing, tk), '')
@@ -256,8 +283,14 @@ class MetadataSync(ReleaseSync):
             if note.get('system') or note.get('internal') or note.get('confidential'):
                 continue
             identity = ('pr:' if pull else 'issue:') + str(source_item['id']) + ':' + str(note['id'])
+            if reconciliation.held(self.store,self.scope,'comments:'+identity):
+                self._review_seen.add('comments:'+identity)
+                self.record('comments','skipped',identity,reason='Kommentar durch Entscheidung gesperrt; keine automatische Wiederverknuepfung')
+                continue
             marker = self.marker('comments', identity)
-            existing = next((x for x in targets if marker in (x.get('body') or '')), None)
+            existing, unique = self.unique_marker('comments', identity, targets)
+            if not unique:
+                continue
             if existing and not self.mapping('comments', identity):
                 self.remember('comments', identity, existing['id'], '')
             self._comment_target_ticket = ('mr:' if pull and tk == 'gitlab' else '') + str(tn)

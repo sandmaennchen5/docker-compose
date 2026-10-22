@@ -206,6 +206,35 @@ class MeshTests(unittest.TestCase):
         self.sync()
         self.assertEqual(self.writes, [])
 
+    def test_duplicate_milestone_copy_never_updates_either_candidate(self):
+        self.data['fj']['milestones'].append(dict(id=50, number=7, title='Native', description='Plan', state='open'))
+        self.sync()
+        duplicate = copy.deepcopy(self.data['gh']['milestones'][0])
+        duplicate.update(id=900, number=900)
+        self.data['gh']['milestones'].append(duplicate)
+        self.data['fj']['milestones'][0]['state'] = 'closed'
+        self.writes.clear()
+        result = self.sync()
+        self.assertGreater(result['counts'].get('conflict', 0), 0)
+        self.assertEqual(self.writes, [])
+        self.assertTrue(all(row['state'] == 'open' for row in self.data['gh']['milestones']))
+
+    def test_forgejo_close_and_reopen_only_send_milestone_state(self):
+        self.data['fj']['milestones'].append(dict(id=50, number=7, title='Forge milestone', description='Plan', due_on=None, state='open'))
+        self.sync()
+        for closed in (True, False):
+            self.data['fj']['milestones'][0]['state'] = 'closed' if closed else 'open'
+            self.writes.clear()
+            self.sync()
+            for name in ('gh', 'gl'):
+                self.assertEqual(self.data[name]['milestones'][0]['state'], 'closed' if closed else 'active' if name == 'gl' else 'open')
+                writes = [body for remote, path, method, body in self.writes if remote == name and '/milestones/' in path]
+                expected = {'state_event': 'close' if closed else 'activate'} if name == 'gl' else {'state': 'closed' if closed else 'open'}
+                self.assertEqual(writes, [expected])
+            self.writes.clear()
+            self.sync()
+            self.assertEqual(self.writes, [])
+
     def test_single_remote_edits_and_state_changes_propagate(self):
         self.data['gh']['milestones'].append(dict(id=2, number=2, title='v1', description='Plan', state='open'))
         self.data['gh']['comments'].append(dict(id=3, body='Discussion', user={'login': 'alice'}))
