@@ -19,6 +19,31 @@ class VaultAccountTests(unittest.TestCase):
         self.data = Path(self.temp.name)
         self.store = management.Control(self.data)
 
+    def test_validation_errors_report_fields_without_echoing_secrets(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from unittest.mock import MagicMock
+        provider = {'kind': 'github', 'url': 'https://github.com', 'token': 'private-token'}
+        payloads = [
+            (b'{"message":"private-token","errors":[{"resource":"Milestone","field":"due_on","code":"invalid","value":"private-token"}]}', 'Milestone/due_on/invalid'),
+            (b'{"errors":[{"field":"private-token","message":"private-token"}]}', ''),
+            (b'<html>private-token</html>', ''),
+            (b'{"errors":null}', ''),
+        ]
+        for payload, expected in payloads:
+            with self.subTest(payload=payload):
+                error = HTTPError('https://api.github.com/test', 422, 'invalid', {}, BytesIO(payload))
+                opener = MagicMock()
+                opener.open.side_effect = error
+                with patch.object(management, 'build_opener', return_value=opener):
+                    with self.assertRaises(management.ProviderError) as raised:
+                        self.store.api(provider, '/test')
+                self.assertEqual(raised.exception.status, 422)
+                self.assertNotIn('private-token', str(raised.exception))
+                if expected:
+                    self.assertIn(expected, str(raised.exception))
+                self.assertTrue(error.fp.closed)
+
     def provider(self, **changes):
         body = {'id': 'forge', 'name': 'Forgejo', 'kind': 'forgejo', 'url': 'https://forge.example',
                 'username': 'alice', 'token': 'very-private-api-token'}

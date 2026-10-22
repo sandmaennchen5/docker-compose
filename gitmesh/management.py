@@ -243,8 +243,24 @@ class Control:
                     raise ProviderError('Provider-Antwort zu groß')
                 return json.loads(payload) if payload else {}
         except HTTPError as exc:
-            exc.close()
-            raise ProviderError('Provider-API antwortet mit HTTP ' + str(exc.code), exc.code) from None
+            details = []
+            try:
+                if exc.code == 422:
+                    payload = json.loads(exc.read(16385))
+                    # Log only validation identifiers, never rejected values or
+                    # raw provider messages which can contain credentials.
+                    for error in payload.get('errors', [])[:10]:
+                        if isinstance(error, dict):
+                            parts = [error.get(key) for key in ('resource', 'field', 'code')]
+                            parts = [part for part in parts if isinstance(part, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', part) and not (provider.get('token') and provider['token'] in part)]
+                            if parts:
+                                details.append('/'.join(parts))
+            except (ValueError, TypeError, AttributeError, OSError):
+                pass
+            finally:
+                exc.close()
+            message = 'Provider-API antwortet mit HTTP ' + str(exc.code)
+            raise ProviderError(message + (': ' + ', '.join(details) if details else ''), exc.code) from None
         except (URLError, TimeoutError, ValueError, OSError):
             raise ProviderError('Provider-API nicht erreichbar oder ungültige Antwort') from None
 

@@ -41,6 +41,30 @@ class AuthorRoutingTests(unittest.TestCase):
             result['user'] = author
         return result
 
+    def test_deleted_foreign_comment_is_not_recreated_by_bot(self):
+        self.f.sync()
+        self.f.data['fj']['comments'].append(dict(id=50, body='Foreign comment', user={'id': 777, 'login': 'external'}))
+        self.f.sync()
+        self.assertEqual(self.f.data['gh']['comments'][0]['user']['id'], self.bots['gh'])
+        self.f.data['gh']['comments'].clear()
+        self.requests.clear()
+        self.f.sync()
+        self.f.sync()
+        self.assertFalse(self.f.data['gh']['comments'])
+        self.assertFalse(self.requests)
+
+    def test_delete_decision_uses_original_bot_writer_for_copies(self):
+        import conflicts
+        self.f.data['gh']['comments'].append(dict(id=50, body='Foreign', user={'id': 777, 'login': 'external'}))
+        self.f.sync()
+        self.f.data['gh']['comments'].clear()
+        item = next(r for r in self.f.sync()['items'] if r.get('kind') == 'comment_deletion')
+        self.requests.clear()
+        result = conflicts.resolve(self.f.store, self.f.repo, {'conflict_id': item['resolution_id'], 'choice': 'delete_copies'}, 'admin')
+        self.assertEqual(result['status'], 'success')
+        deletes = [(provider, method) for provider, _, _, method, _ in self.requests]
+        self.assertEqual(set(deletes), {('gl_bot', 'DELETE'), ('fj_bot', 'DELETE')})
+
     def test_own_issue_and_comment_use_personal_accounts(self):
         self.f.data['gh']['comments'].append(dict(id=50, body='My comment', user={'id': 11, 'login': 'michael-gh'}))
         self.f.sync()

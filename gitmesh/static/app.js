@@ -443,7 +443,7 @@ function conflictPanel(job, scope) {
       const versions = node('div', '', 'conflict-versions');
       for (const [remote, fields] of Object.entries(item.values)) {
         const version = node('div', '', 'conflict-version'); version.append(node('strong', remote));
-        for (const [field, value] of Object.entries(fields)) version.append(node('small', ({name: 'Name', title: 'Titel', description: 'Beschreibung', color: 'Farbe', body: 'Kommentar', due: 'Termin', closed: 'Geschlossen'})[field] || field), node('pre', String(value ?? '')));
+        for (const [field, value] of Object.entries(fields)) version.append(node('small', ({name: 'Name', title: 'Titel', description: 'Beschreibung', color: 'Farbe', body: 'Kommentar', due: 'Termin', closed: 'Geschlossen', status: 'Status', url: 'Link'})[field] || field), node('pre', String(value ?? '')));
         versions.append(version);
       }
       details.append(versions); row.append(details);
@@ -451,7 +451,7 @@ function conflictPanel(job, scope) {
     if (resolved) row.append(node('p', 'Aufgeloest. Dieses Protokoll zeigt den damaligen Konflikt.', 'resolved-conflict'));
     else if (admin() && item.resolution_id) {
       for (const choice of item.choices || []) {
-        const label = item.category === 'labels' ? (choice === 'adopt' ? 'Vorhandenes Label zuordnen' : 'Quellwerte uebernehmen') : 'Version von ' + choice + ' uebernehmen';
+        const label = item.kind === 'comment_deletion' ? (choice === 'delete_copies' ? 'Verbleibende Kopien loeschen' : 'Kopien behalten und Sync sperren') : item.category === 'labels' ? (choice === 'adopt' ? 'Vorhandenes Label zuordnen' : 'Quellwerte uebernehmen') : 'Version von ' + choice + ' uebernehmen';
         row.append(button(label, () => resolveConflict(job, item, choice)));
       }
       if (item.category === 'labels') row.append(node('small', 'Zuordnen behaelt die aktuellen Zielwerte; spaetere Quellaenderungen werden wieder synchronisiert.'));
@@ -468,7 +468,7 @@ function conflictPanel(job, scope) {
   return root;
 }
 async function resolveConflict(job, item, choice) {
-  const text = item.category === 'labels' && choice === 'adopt' ? 'Vorhandenes Label zuordnen und seine aktuellen Zielwerte behalten? Spaetere Quellaenderungen werden synchronisiert.' : 'Die ausgewaehlten Werte uebernehmen und die abweichenden Werte dieses Eintrags ersetzen?';
+  const text = item.kind === 'comment_deletion' ? (choice === 'delete_copies' ? 'Die angezeigten zugeordneten Kopien auf den anderen Plattformen endgueltig loeschen? Vorhandene Originalkommentare bleiben erhalten. Der weitere Abgleich dieses Kommentars bleibt gesperrt.' : 'Vorhandene Kopien behalten und den weiteren Abgleich dieses Kommentars dauerhaft sperren?') : item.category === 'labels' && choice === 'adopt' ? 'Vorhandenes Label zuordnen und seine aktuellen Zielwerte behalten? Spaetere Quellaenderungen werden synchronisiert.' : 'Die ausgewaehlten Werte uebernehmen und die abweichenden Werte dieses Eintrags ersetzen?';
   if (!confirm(text)) return;
   return runSave(null, async () => {
     const result = await request('/api/conflicts/resolve', 'POST', {profile: job.profile, conflict_id: item.resolution_id, choice});

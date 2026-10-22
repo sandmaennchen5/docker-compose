@@ -30,6 +30,8 @@ class MetadataMesh:
         with self.store.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS metadata_links (scope TEXT, item TEXT, target TEXT, signature TEXT, PRIMARY KEY(scope,item))')
             db.execute('CREATE TABLE IF NOT EXISTS metadata_mesh (mesh TEXT, category TEXT, origin TEXT, remote TEXT, item TEXT, snapshot TEXT, PRIMARY KEY(mesh,category,origin,remote))')
+            db.execute('CREATE TABLE IF NOT EXISTS comment_tombstones (mesh TEXT, category TEXT, origin TEXT, remote TEXT, item TEXT, PRIMARY KEY(mesh,category,origin))')
+            db.execute('CREATE TABLE IF NOT EXISTS comment_decisions (mesh TEXT, category TEXT, origin TEXT, action TEXT, PRIMARY KEY(mesh,category,origin))')
 
     def scope(self, target):
         s, t = self.peers[self.source], self.peers[target]
@@ -94,6 +96,69 @@ class MetadataMesh:
             return row['id']
         return row['id'] if self.peers[remote]['provider']['kind'] == 'gitlab' else row.get('number', row['id'])
 
+    def deletion_review(self, category, origin, members, collections, removed):
+        with self.store.db() as db:
+            decision = db.execute('SELECT action FROM comment_decisions WHERE mesh=? AND category=? AND origin=?',
+                                  (self.key, category, origin)).fetchone()
+        if decision:
+            self.record(self.source, category, 'skipped', origin, name=self.ticket_context,
+                        reason='Kommentar-Loeschung bereits entschieden; weiterer Abgleich bleibt gesperrt')
+            return
+        origin_remote = origin.split(':', 1)[0]
+        versions = {n: {'id': str(row['id']), 'fields': {'body': row.get('body') or ''},
+                        'copy': n != origin_remote, 'url': row.get('html_url') or row.get('web_url') or ''}
+                    for n, row in members.items()}
+        remote = next((n for n, key in self.peer_keys.items() if key == removed['remote']), None)
+        if remote not in collections:
+            self.record(self.source, category, 'skipped', origin, reason='Geloeschter Kommentar bleibt gesperrt; betroffenes Remote nicht verfuegbar')
+            return
+        payload = {'kind': 'comment_deletion', 'mesh': self.key, 'category': category, 'origin': origin,
+                   'name': self.ticket_context or 'Kommentar', 'removed': {'remote': remote, 'id': str(removed['item'])},
+                   'versions': versions, 'collections': collections,
+                   'bindings': {n: conflict_store.binding(self.peers[n]['provider'], self.peers[n]['root'], self.peers[n]['identity']) for n in collections}}
+        identifier = conflict_store.remember(self.store, self.repo, payload)
+        values = {n: {'body': version['fields']['body'][:2000], 'status': 'Kopie' if version['copy'] else 'Original (wird nicht geloescht)',
+                      'url': version['url']} for n, version in versions.items()}
+        values.setdefault(remote, {'status': 'Geloescht', 'body': ''})
+        self.record(remote, category, 'conflict', origin, name=self.ticket_context or 'Geloeschter Kommentar',
+                    kind='comment_deletion', resolution_id=identifier, choices=['delete_copies', 'keep_copies'], values=values,
+                    reason='Kommentar auf ' + remote + ' geloescht. Vorhandene Kopien vergleichen und Loeschung bestaetigen oder Kopien behalten. Bis dahin kein weiterer Abgleich dieses Kommentars.')
+
+    def comment_removed(self, category, origin, members, collections, owners):
+        if not category.startswith('comments:'):
+            return False
+        with self.store.db() as db:
+            removed = db.execute('SELECT remote,item FROM comment_tombstones WHERE mesh=? AND category=? AND origin=?',
+                                 (self.key, category, origin)).fetchone()
+        if removed:
+            self.deletion_review(category, origin, members, collections, removed)
+            return True
+        # Only a previously known object can establish a deletion. A new remote
+        # has no mapping and must still receive ordinary new comments.
+        for (remote, identifier), owner in owners.items():
+            if owner != origin or remote not in collections or remote in members:
+                continue
+            endpoint = collections[remote] if self.peers[remote]['provider']['kind'] == 'gitlab' else '/issues/comments'
+            try:
+                self.api(remote, endpoint + '/' + quote(str(identifier), safe=''))
+            except management.ProviderError as exc:
+                if exc.status != 404:
+                    self.e.result['errors'].append({'target': remote, 'category': 'comments', 'item': identifier,
+                                                   'message': 'Geloeschten Kommentar nicht bestaetigt: ' + str(exc)})
+                    return True
+                # Persist before doing any writes, including after partial runs.
+                with self.store.db() as db:
+                    db.execute('INSERT OR IGNORE INTO comment_tombstones VALUES (?,?,?,?,?)',
+                               (self.key, category, origin, self.peer_keys[remote], str(identifier)))
+                self.deletion_review(category, origin, members, collections, {'remote': self.peer_keys[remote], 'item': str(identifier)})
+                return True
+            # Filtered/private notes or an inconsistent list are not deletions.
+            # Pause this group without recording a permanent tombstone.
+            self.record(remote, category, 'skipped', identifier, name=self.ticket_context,
+                        reason='Zugeordneter Kommentar fehlt in der Liste; Abgleich vorsorglich ausgesetzt')
+            return True
+        return False
+
     def reconcile(self, category, collections, rows, legacy):
         with self.store.db() as db:
             edges = [dict(r) for r in db.execute('SELECT * FROM metadata_mesh WHERE mesh=? AND category=?', (self.key, category))]
@@ -124,6 +189,8 @@ class MetadataMesh:
                 blocked_remotes.add(remote)
                 self.conflict(category, remote + ':' + identifier)
         for origin, members in groups.items():
+            if self.comment_removed(category, origin, members, collections, owners):
+                continue
             origin_remote = origin.split(':', 1)[0]
             values = {n: self.fields(category, r, n != origin_remote) for n, r in members.items()}
             changed = [v for n, v in values.items() if snapshots.get((origin, n)) is not None and snapshots[(origin, n)] != v]
@@ -162,6 +229,10 @@ class MetadataMesh:
                         writer = self.authors.writer(peer['provider'], peer['root'], 'comments', item, provenance)
                     status = 'unchanged'
                     if item is None:
+                        # GitHub creation accepts a timestamp, not JSON null.
+                        # Updates still use null to clear an existing deadline.
+                        if category == 'milestones' and kind == 'github' and fields.get('due_on') is None:
+                            fields.pop('due_on', None)
                         item = self.api(remote, collection, 'POST', fields, writer=writer)
                         members[remote] = item
                         rows[remote].append(item)
@@ -192,7 +263,7 @@ class MetadataMesh:
                     self.record(remote, category, status, identifier, **({'writer': self.authors.account(writer)['login']} if writer and (peer['provider']['id'] in self.authors.rules or provenance and provenance.get('tracked')) else {}))
                 except (management.ProviderError, KeyError, ValueError, TypeError) as exc:
                     complete = False
-                    self.e.result['errors'].append({'target': remote, 'category': category.split(':')[0], 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Metadaten-Antwort'})
+                    self.e.result['errors'].append({'target': remote, 'category': category.split(':')[0], 'item': origin, 'name': desired.get('title', self.ticket_context or 'Kommentar'), 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Metadaten-Antwort'})
             if complete:
                 for remote, identifier in committed:
                     self.save(category, origin, remote, identifier, desired)

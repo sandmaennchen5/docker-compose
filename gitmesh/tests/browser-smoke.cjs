@@ -280,11 +280,12 @@ async function main() {
     await page.unroute('**/api/settings');
     await page.locator('[data-page=profiles]').click();
     // Open logs must survive the real five-second poll and changed job details.
-    let logVersion = 1, statusSequence = 0, fixtureResolved = false;
+    let logVersion = 1, statusSequence = 0, fixtureResolved = false, deletionResolved = false;
     await page.route('**/api/status', async route => {
       const response = await route.fetch(), data = await response.json();
       data.testSequence = ++statusSequence;
-      data.resolved_conflicts = fixtureResolved ? ['browser-label-conflict'] : [];
+      data.resolved_conflicts = [...(fixtureResolved ? ['browser-label-conflict'] : []), ...(deletionResolved ? ['browser-deletion-conflict'] : [])];
+      data.jobs.push({id: 900002, profile: settings.repositories[0].name, status: 'conflict', requested: 1, origin: 'fixture', attempts: 1, details: {metadata: {counts: {conflict: 1}, items: [{category: 'comments', status: 'conflict', kind: 'comment_deletion', name: 'Issue #15: Discussion', target: 'GitHub', reason: 'Kommentar geloescht; Entscheidung erforderlich.', resolution_id: 'browser-deletion-conflict', choices: ['delete_copies', 'keep_copies'], values: {GitHub: {status: 'Geloescht'}, Forgejo: {status: 'Kopie', body: 'Original discussion'}}}]}}});
       data.jobs.unshift({id: 900001, profile: settings.repositories[0].name, status: 'conflict', requested: 1, origin: 'fixture', attempts: 1, details: {message: 'Log version ' + logVersion, conflicts: [], metadata: {counts: {conflict: 1}, items: [{category: 'labels', status: 'conflict', target: 'Forgejo', item: '77', name: 'bug', reason: 'Gleichnamiges vorhandenes Label hat andere Werte.', values: {GitHub: {color: 'ff0000'}, Forgejo: {color: '000000'}}, resolution_id: 'browser-label-conflict', choices: ['adopt', 'source']}]}}});
       await route.fulfill({response, json: data});
     });
@@ -320,7 +321,8 @@ async function main() {
     assert.equal(await log.evaluate(node => node.open), true, 'Filtering must preserve expanded state');
     let resolutionPayload;
     await page.route('**/api/conflicts/resolve', async route => {
-      resolutionPayload = route.request().postDataJSON(); fixtureResolved = true;
+      resolutionPayload = route.request().postDataJSON();
+      if (resolutionPayload.conflict_id === 'browser-deletion-conflict') deletionResolved = true; else fixtureResolved = true;
       await route.fulfill({json: {status: 'success'}});
     });
     page.once('dialog', dialog => dialog.accept());
@@ -329,6 +331,19 @@ async function main() {
     assert.equal(resolutionPayload.choice, 'adopt');
     assert.equal(resolutionPayload.profile, settings.repositories[0].name);
     assert.equal(await page.locator('#jobs article[data-job-id="900001"]').getByRole('button', {name: 'Vorhandenes Label zuordnen', exact: true}).count(), 0);
+    await page.waitForFunction(() => activeSave === null);
+    const deletionCard = page.locator('#jobs article[data-job-id="900002"]');
+    await deletionCard.getByRole('button', {name: 'Kopien behalten und Sync sperren', exact: true}).waitFor();
+    await deletionCard.locator('details.conflict-values summary').click();
+    await deletionCard.locator('pre').filter({hasText: 'Original discussion'}).first().waitFor();
+    let deletePrompt = '';
+    page.once('dialog', async dialog => { deletePrompt = dialog.message(); await dialog.accept(); });
+    await deletionCard.getByRole('button', {name: 'Verbleibende Kopien loeschen', exact: true}).click();
+    await deletionCard.locator('.resolved-conflict').waitFor();
+    assert.equal(resolutionPayload.choice, 'delete_copies');
+    assert.equal(resolutionPayload.conflict_id, 'browser-deletion-conflict');
+    assert.match(deletePrompt, /endgueltig loeschen/);
+    assert.match(deletePrompt, /Originalkommentare bleiben erhalten/);
     await page.waitForFunction(() => activeSave === null);
     await page.unroute('**/api/conflicts/resolve');
     await page.unroute('**/api/status');

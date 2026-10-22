@@ -38,6 +38,10 @@ class MetadataSync(ReleaseSync):
             self.result['items'].append({'category': category, 'status': status, 'target': self.target, 'item': str(identity), **details})
         else:
             self.result['truncated'] = True
+            if status == 'conflict':
+                replace = next((i for i, row in enumerate(self.result['items']) if row['status'] != 'conflict'), None)
+                if replace is not None:
+                    self.result['items'][replace] = {'category': category, 'status': status, 'target': self.target, 'item': str(identity), **details}
 
     @staticmethod
     def number(item, kind):
@@ -95,6 +99,8 @@ class MetadataSync(ReleaseSync):
         origin = self.authors.origin(self.source_provider, self.source_root, category, source_item) if source_item is not None else None
         writer = self.authors.writer(p, root, category, existing, origin) if origin else p
         if existing is None:
+            if category == 'milestones' and p['kind'] == 'github' and fields.get('due_on') is None:
+                fields = {key: value for key, value in fields.items() if key != 'due_on'}
             result = self.store.api(writer, root + collection, method='POST', body=fields)
             status = 'created'
         else:

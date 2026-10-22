@@ -132,6 +132,94 @@ class MeshResolutionTests(unittest.TestCase):
         self.assertFalse(self.f.writes)
 
 
+class CommentDeletionTests(unittest.TestCase):
+    def setUp(self):
+        self.f = mesh_fixture.MeshTests('test_native_forgejo_milestone_and_comments_reach_both_other_providers')
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.f.data['gh']['comments'].append(dict(id=3, body='Original discussion'))
+        self.f.sync()
+        self.f.data['gh']['comments'].clear()
+        result = self.f.sync()
+        self.item = next(row for row in result['items'] if row.get('kind') == 'comment_deletion')
+        self.f.writes.clear()
+
+    def resolve(self, choice):
+        return conflicts.resolve(self.f.store, self.f.repo, {'conflict_id': self.item['resolution_id'], 'choice': choice}, 'admin')
+
+    def test_review_contains_all_versions_and_never_deletes_automatically(self):
+        self.assertEqual(set(self.item['values']), {'gh', 'gl', 'fj'})
+        self.assertEqual(self.item['values']['gh']['status'], 'Geloescht')
+        self.assertIn('Original discussion', self.item['values']['fj']['body'])
+        self.f.sync()
+        self.assertFalse(self.f.writes)
+        self.assertFalse(self.f.data['gh']['comments'])
+
+    def test_confirmed_delete_removes_only_linked_copies_and_stays_deleted(self):
+        self.f.data['fj']['comments'].append(dict(id=999, body='Unrelated original'))
+        result = self.resolve('delete_copies')
+        self.assertEqual(len(result['deleted_copies']), 2)
+        self.assertEqual(self.f.data['gl']['comments'], [])
+        self.assertEqual([r['id'] for r in self.f.data['fj']['comments']], [999])
+        # The unrelated original is allowed to sync, the removed comment is not.
+        self.f.sync()
+        self.assertTrue(all('Original discussion' not in r['body'] for rows in self.f.data.values() for r in rows['comments']))
+
+    def test_keep_retains_copies_and_does_not_reopen_decision(self):
+        self.assertEqual(self.resolve('keep_copies')['status'], 'success')
+        self.assertFalse(self.f.writes)
+        self.assertFalse(self.f.sync()['counts'].get('conflict'))
+        self.assertFalse(self.f.sync()['counts'].get('conflict'))
+        self.assertEqual(len(self.f.data['fj']['comments']), 1)
+        self.assertFalse(self.f.data['gh']['comments'])
+
+    def test_modified_copy_aborts_before_any_delete(self):
+        self.f.data['fj']['comments'][0]['body'] = 'Changed after review'
+        with self.assertRaises(inspection.StaleState):
+            self.resolve('delete_copies')
+        self.assertFalse(self.f.writes)
+        self.assertEqual(len(self.f.data['gl']['comments']), 1)
+
+    def test_existing_original_is_preserved_when_target_copy_was_deleted(self):
+        # Start an independent group, delete a target instead of its origin.
+        self.resolve('keep_copies')
+        self.f.data['gh']['comments'].append(dict(id=4, body='Preserved original'))
+        self.f.sync()
+        self.f.data['fj']['comments'] = [r for r in self.f.data['fj']['comments'] if 'Preserved original' not in r['body']]
+        self.item = next(r for r in self.f.sync()['items'] if r.get('kind') == 'comment_deletion')
+        result = self.resolve('delete_copies')
+        self.assertEqual([r['remote'] for r in result['deleted_copies']], ['gl'])
+        self.assertEqual(self.f.data['gh']['comments'][0]['body'], 'Preserved original')
+
+    def test_partial_delete_retry_and_stale_config(self):
+        with self.assertRaises(inspection.StaleState):
+            conflicts.resolve(self.f.store, dict(self.f.repo, enabled=False), {'conflict_id': self.item['resolution_id'], 'choice': 'delete_copies'}, 'admin')
+        original = self.f.api
+        failed = False
+        def api(provider, path, query=None, *, method='GET', body=None):
+            nonlocal failed
+            if method == 'DELETE' and provider['id'] == 'fj' and not failed:
+                failed = True
+                raise mesh_fixture.management.ProviderError('Temporary failure', 503)
+            return original(provider, path, query, method=method, body=body)
+        with patch.object(self.f.store, 'api', side_effect=api):
+            with self.assertRaises(mesh_fixture.management.ProviderError):
+                self.resolve('delete_copies')
+            self.assertEqual(self.resolve('delete_copies')['status'], 'success')
+        self.assertFalse(self.f.data['gl']['comments'])
+        self.assertFalse(self.f.data['fj']['comments'])
+
+    def test_conflict_remains_visible_after_log_item_limit(self):
+        engine = metadata.MetadataSync(self.f.store)
+        engine.result = {'items': [], 'counts': {}}
+        engine.target = 'gh'
+        for n in range(210):
+            engine.record('comments', 'unchanged', n)
+        engine.record('comments', 'conflict', 'deleted', kind='comment_deletion')
+        self.assertEqual(len(engine.result['items']), 200)
+        self.assertTrue(any(r.get('kind') == 'comment_deletion' for r in engine.result['items']))
+
+
 class ResolutionHttpTests(HttpCase):
     def test_reader_and_anonymous_cannot_resolve(self):
         self.assertEqual(self.request('POST', '/api/conflicts/resolve', b'{}')[0], 401)

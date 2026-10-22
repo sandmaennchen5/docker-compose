@@ -47,6 +47,12 @@ class MeshTests(unittest.TestCase):
                 raise management.ProviderError('Not found', 404)
             return copy.deepcopy(row)
         self.writes.append((name, path, method, copy.deepcopy(body)))
+        if method == 'DELETE':
+            row = next((r for r in rows if str(r['id']) == parts[-1]), None)
+            if row is None:
+                raise management.ProviderError('Not found', 404)
+            rows.remove(row)
+            return {}
         if method == 'POST':
             self.serial += 1
             row = dict(id=self.serial, **body)
@@ -66,6 +72,121 @@ class MeshTests(unittest.TestCase):
         result = metadata.MetadataSync(self.store).sync(self.repo, {})
         self.assertEqual(result['errors'], [], result)
         return result
+
+    def test_github_create_omits_empty_deadline_and_updates_can_clear_it(self):
+        self.data['fj']['milestones'].append(dict(id=50, number=7, title='4.1.1', description='Plan', due_on=None, state='open'))
+        def strict(provider, path, query=None, *, method='GET', body=None):
+            if provider['kind'] == 'github' and method == 'POST' and path.endswith('/milestones') and 'due_on' in body and body['due_on'] is None:
+                raise management.ProviderError('Milestone/due_on/invalid', 422)
+            return self.api(provider, path, query, method=method, body=body)
+        with patch.object(self.store, 'api', side_effect=strict):
+            self.sync()
+            self.data['fj']['milestones'][0]['due_on'] = '2027-01-01T00:00:00Z'
+            self.sync()
+            self.assertEqual(self.data['gh']['milestones'][0]['due_on'], '2027-01-01T00:00:00Z')
+            self.data['fj']['milestones'][0]['due_on'] = None
+            self.sync()
+            self.assertIsNone(self.data['gh']['milestones'][0]['due_on'])
+            self.writes.clear()
+            self.sync()
+            self.assertEqual(self.writes, [])
+
+    def test_one_way_forgejo_to_github_omits_empty_creation_deadline(self):
+        self.repo.update(source='fj', direction='one-way', issues=False, comments=False)
+        self.data['fj']['milestones'].append(dict(id=50, number=7, title='S', description='', due_on=None, state='open'))
+        def strict(provider, path, query=None, *, method='GET', body=None):
+            if provider['kind'] == 'github' and method == 'POST' and path.endswith('/milestones'):
+                self.assertNotIn('due_on', body)
+            return self.api(provider, path, query, method=method, body=body)
+        with patch.object(self.store, 'api', side_effect=strict):
+            self.sync()
+        self.assertEqual(self.data['gh']['milestones'][0]['title'], 'S')
+
+    def test_milestone_errors_identify_title_and_origin(self):
+        self.data['fj']['milestones'].append(dict(id=50, number=7, title='4.1.1', description='', state='open'))
+        def reject(provider, path, query=None, *, method='GET', body=None):
+            if provider['kind'] == 'github' and method == 'POST' and path.endswith('/milestones'):
+                raise management.ProviderError('Milestone/title/already_exists', 422)
+            return self.api(provider, path, query, method=method, body=body)
+        with patch.object(self.store, 'api', side_effect=reject):
+            result = metadata.MetadataSync(self.store).sync(self.repo, {})
+        self.assertEqual(result['errors'][0]['name'], '4.1.1')
+        self.assertIn('fj:', result['errors'][0]['item'])
+
+    def test_deleted_linked_comments_never_return_from_other_peers(self):
+        self.data['gh']['comments'].append(dict(id=3, body='Delete me', user={'login': 'alice'}))
+        self.sync()
+        for remote in self.kinds:
+            with self.subTest(remote=remote):
+                saved = copy.deepcopy(self.data[remote]['comments'])
+                self.data[remote]['comments'].clear()
+                self.writes.clear()
+                result = self.sync()
+                self.assertFalse(self.data[remote]['comments'])
+                self.assertFalse(self.writes)
+                self.assertGreater(result['counts'].get('conflict', 0), 0)
+                # Surviving edits and subsequent runs cannot undo deletion.
+                other = next(n for n in self.kinds if n != remote)
+                self.data[other]['comments'][0]['body'] = 'Edited survivor'
+                self.sync()
+                self.assertFalse(self.data[remote]['comments'])
+                self.assertFalse(self.writes)
+                self.data[remote]['comments'] = saved
+                with self.store.db() as db:
+                    db.execute('DELETE FROM comment_tombstones')
+                # Restore matching snapshots for the next independent subcase.
+                self.data[other]['comments'][0]['body'] = saved[0]['body']
+                # Each subcase uses the stored links, independent of body text.
+
+    def test_filtered_comment_is_paused_without_permanent_deletion(self):
+        self.data['gh']['comments'].append(dict(id=3, body='Keep'))
+        self.sync()
+        self.data['fj']['comments'][0]['internal'] = True
+        self.writes.clear()
+        self.sync()
+        self.assertFalse(self.writes)
+        with self.store.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM comment_tombstones').fetchone()[0], 0)
+        self.data['fj']['comments'][0]['internal'] = False
+        self.data['gh']['comments'][0]['body'] = 'Public edit'
+        self.sync()
+        self.assertIn('Public edit', self.data['fj']['comments'][0]['body'])
+
+    def test_missing_comment_api_failure_does_not_establish_deletion(self):
+        self.data['gh']['comments'].append(dict(id=3, body='Keep'))
+        self.sync()
+        self.data['fj']['comments'].clear()
+        def forbidden(provider, path, query=None, *, method='GET', body=None):
+            if provider['id'] == 'fj' and method == 'GET' and '/issues/comments/' in path:
+                raise management.ProviderError('Forbidden', 403)
+            return self.api(provider, path, query, method=method, body=body)
+        self.writes.clear()
+        with patch.object(self.store, 'api', side_effect=forbidden):
+            result = metadata.MetadataSync(self.store).sync(self.repo, {})
+        self.assertTrue(result['errors'])
+        self.assertFalse(self.writes)
+        with self.store.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM comment_tombstones').fetchone()[0], 0)
+
+    def test_comment_tombstone_survives_engine_restart_and_new_remote(self):
+        self.repo['remotes'].pop('gl')
+        self.repo['remote_providers'].pop('gl')
+        self.data['gh']['comments'].append(dict(id=3, body='Deleted original'))
+        self.sync()
+        self.data['gh']['comments'].clear()
+        self.sync()
+        self.repo['remotes']['gl'] = 'https://gl.example/team/repo.git'
+        self.repo['remote_providers']['gl'] = 'gl'
+        self.writes.clear()
+        self.sync()
+        self.assertEqual(self.data['gh']['comments'], [])
+        self.assertEqual(self.data['gl']['comments'], [])
+        self.assertFalse(any('/comments' in path or '/notes' in path for _, path, _, _ in self.writes))
+        # An unrelated new comment must still be distributed.
+        self.data['gh']['comments'].append(dict(id=4, body='New comment'))
+        self.sync()
+        self.assertEqual(len(self.data['gl']['comments']), 1)
+        self.assertIn('New comment', self.data['gl']['comments'][0]['body'])
 
     def test_native_forgejo_milestone_and_comments_reach_both_other_providers(self):
         self.sync()
