@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+from email.utils import parsedate_to_datetime
 import fnmatch
 import hmac
 import json
@@ -218,6 +219,50 @@ class Control:
             db.execute('DELETE FROM provider_transport WHERE id=?', (identifier,))
             db.execute('DELETE FROM provider_http WHERE id=?', (identifier,))
 
+    def api_budget(self, provider, cooldown=None):
+        # Share the host budget across tokens, profiles and worker processes.
+        host = (urlsplit(provider['url']).hostname or '').lower()
+        paced = provider['kind'] == 'gitlab' and host == 'gitlab.com'
+        with self.db() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS api_budget (host TEXT PRIMARY KEY, next_at REAL NOT NULL, blocked_until REAL NOT NULL)')
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT next_at, blocked_until FROM api_budget WHERE host=?', (host,)).fetchone()
+            now = time.time()
+            next_at, blocked = tuple(row) if row else (0, 0)
+            if cooldown is not None:
+                blocked = max(blocked, now + cooldown)
+                db.execute('INSERT OR REPLACE INTO api_budget VALUES(?,?,?)', (host, next_at, blocked))
+                return
+            if blocked > now:
+                raise RateLimited('Provider-API pausiert nach HTTP 429; erneut in ' + str(math.ceil(blocked-now)) + ' Sekunden versuchen', 429)
+            delay = max(0, next_at-now) if paced else 0
+            if delay > 30:
+                raise RateLimited('GitLab-API ausgelastet; naechsten Sync abwarten', 429)
+            if paced:
+                # <= 4,000 requests/hour, leaving room below the Free allowance.
+                db.execute('INSERT OR REPLACE INTO api_budget VALUES(?,?,?)', (host, now+delay+0.9, blocked))
+        if delay:
+            time.sleep(delay)
+        # Another process may have received a 429 while this call was waiting.
+        with self.db() as db:
+            row = db.execute('SELECT blocked_until FROM api_budget WHERE host=?', (host,)).fetchone()
+            if row and row[0] > time.time():
+                raise RateLimited('Provider-API pausiert nach HTTP 429; naechsten Sync abwarten', 429)
+
+    @staticmethod
+    def api_retry_after(headers):
+        value = headers.get('Retry-After', '') if headers else ''
+        try:
+            seconds = float(value)
+        except (ValueError, TypeError):
+            try:
+                seconds = parsedate_to_datetime(value).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                seconds = 60
+        if not math.isfinite(seconds):
+            seconds = 60
+        return max(1, seconds)
+
     def api(self, provider, path, query=None, *, method='GET', body=None):
         url = provider['url']
         if urlsplit(url).scheme == 'http' and not provider.get('allow_http'):
@@ -236,6 +281,7 @@ class Control:
         if data is not None:
             headers['Content-Type'] = 'application/json'
         request = Request(base + path + ('?' + urlencode(query) if query else ''), headers=headers, data=data, method=method)
+        self.api_budget(provider)
         try:
             with build_opener(NoRedirect()).open(request, timeout=20) as response:
                 payload = response.read(4 * 1024 * 1024 + 1)
@@ -243,6 +289,11 @@ class Control:
                     raise ProviderError('Provider-Antwort zu groß')
                 return json.loads(payload) if payload else {}
         except HTTPError as exc:
+            if exc.code == 429:
+                wait = self.api_retry_after(exc.headers)
+                exc.close()
+                self.api_budget(provider, cooldown=wait)
+                raise RateLimited('Provider-API-Limit erreicht (HTTP 429); Pause fuer ' + str(math.ceil(wait)) + ' Sekunden', 429) from None
             details = []
             try:
                 if exc.code == 422:

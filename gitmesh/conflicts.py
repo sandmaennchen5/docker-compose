@@ -67,11 +67,14 @@ def peers(store, repo, bindings):
 
 
 def resolve_comment_deletion(store, repo, payload, current_peers, choice):
-    if choice not in ('delete_copies', 'keep_copies'):
+    if choice not in ('restore', 'delete_copies', 'keep_copies'):
         raise ValueError('Bitte Kopien loeschen oder behalten auswaehlen')
     from metadata import MetadataSync
     from metadata_mesh import MetadataMesh
-    network = MetadataMesh(MetadataSync(store), repo)
+    import reconciliation
+    engine = MetadataSync(store)
+    engine.result = {'items': [], 'counts': {}, 'warnings': [], 'errors': []}
+    network = MetadataMesh(engine, repo)
     if network.key != payload['mesh']:
         raise inspection.StaleState('Quelle geaendert. Bitte erneut synchronisieren.')
     with store.db() as db:
@@ -84,7 +87,7 @@ def resolve_comment_deletion(store, repo, payload, current_peers, choice):
     origin_remote = payload['origin'].split(':', 1)[0]
     def read(remote, identifier):
         provider, root = current_peers[remote]
-        endpoint = payload['collections'][remote] if provider['kind'] == 'gitlab' else '/issues/comments'
+        endpoint = payload['collections'][remote] if provider['kind'] == 'gitlab' or payload['category'] == 'milestones' else '/issues/comments'
         path = root + endpoint + '/' + quote(str(identifier), safe='')
         try:
             return store.api(provider, path), path
@@ -97,41 +100,59 @@ def resolve_comment_deletion(store, repo, payload, current_peers, choice):
             or read(deleted['remote'], deleted['id'])[0] is not None):
         raise inspection.StaleState('Geloeschter Kommentar inzwischen geaendert. Bitte neu synchronisieren.')
     pending = []
+    review_rows = {remote: [] for remote in payload['collections']}
     # Validate every displayed version before the first DELETE. A retry may
     # find copies already removed by a previously interrupted attempt.
     for remote, expected in payload['versions'].items():
-        current, path = read(remote, expected['id'])
+        current, path = read(remote, expected.get('identifier', expected['id']))
         with store.db() as db:
             edge = db.execute('SELECT origin FROM metadata_mesh WHERE mesh=? AND category=? AND remote=? AND item=?',
-                              (network.key, payload['category'], network.peer_keys[remote], expected['id'])).fetchone()
+                              (network.key, payload['category'], network.peer_keys[remote], expected.get('identifier', expected['id']))).fetchone()
         if not edge or edge['origin'] != payload['origin']:
             raise inspection.StaleState('Kommentar-Zuordnung geaendert. Bitte neu synchronisieren.')
-        if current is not None and (str(current.get('id')) != expected['id'] or {'body': current.get('body') or ''} != expected['fields']):
+        if current is not None and (str(current.get('id')) != expected['id'] or reconciliation.clean(current, 'milestones' if payload['category'] == 'milestones' else 'comments') != expected['fields']):
             raise inspection.StaleState('Kommentar inzwischen bearbeitet. Bitte neu synchronisieren und neu entscheiden.')
+        if current is not None:
+            review_rows[remote] = [current]
         if current is not None and choice == 'delete_copies' and remote != origin_remote:
             if not expected['copy']:
                 raise inspection.StaleState('Originalkommentar darf nicht geloescht werden.')
             pending.append((remote, current, path))
+    if choice == 'restore':
+        if not any(review_rows.values()):
+            raise ValueError('Keine vorhandene Version zur Wiederherstellung verfuegbar')
+        network._allow_restore = True
+        network.ticket_context = payload['name']
+        network.reconcile(payload['category'], payload['collections'], review_rows, {})
+        if engine.result['errors'] or engine.result['counts'].get('conflict'):
+            return dict(engine.result, status='error', choice=choice)
+        with store.db() as db:
+            db.execute('DELETE FROM comment_tombstones WHERE mesh=? AND category=? AND origin=?', (network.key, payload['category'], payload['origin']))
+            db.execute('DELETE FROM comment_decisions WHERE mesh=? AND category=? AND origin=?', (network.key, payload['category'], payload['origin']))
+        return {'status': 'success', 'category': payload['category'].split(':')[0], 'choice': choice, 'restored': True}
     deleted_copies = []
     for remote, current, path in pending:
         peer = network.peers[remote]
-        provenance = network.authors.origin(peer['provider'], peer['root'], 'comments', current)
-        writer = network.authors.writer(peer['provider'], peer['root'], 'comments', current, provenance)
+        writer = peer['provider']
+        if payload['category'].startswith('comments:'):
+            provenance = network.authors.origin(peer['provider'], peer['root'], 'comments', current)
+            writer = network.authors.writer(peer['provider'], peer['root'], 'comments', current, provenance)
         try:
             store.api(writer, path, method='DELETE')
         except management.ProviderError as exc:
             if exc.status != 404:
                 raise
-        if read(remote, current['id'])[0] is not None:
+        if read(remote, str(network.identifier(payload['category'], remote, current)))[0] is not None:
             raise management.ProviderError('Kommentar-Loeschung nicht bestaetigt; bitte erneut pruefen')
         deleted_copies.append({'remote': remote, 'id': str(current['id'])})
     with store.db() as db:
         db.execute('INSERT OR REPLACE INTO comment_decisions VALUES (?,?,?,?)',
                    (network.key, payload['category'], payload['origin'], choice))
-    return {'status': 'success', 'category': 'comments', 'name': payload['name'], 'choice': choice, 'deleted_copies': deleted_copies}
+    reconciliation.hold(store, network.key, payload['category'] + ':' + payload['origin'], 'comment_' + choice)
+    return {'status': 'success', 'category': payload['category'].split(':')[0], 'name': payload['name'], 'choice': choice, 'deleted_copies': deleted_copies}
 
 
-def resolve(store, repo, body, actor):
+def resolve(store, repo, body, actor, tools=None):
     schema(store)
     identifier = body.get('conflict_id')
     with store.db() as db:
@@ -146,7 +167,7 @@ def resolve(store, repo, body, actor):
     current_peers = peers(store, repo, payload['bindings'])
     choice = body.get('choice')
     if payload['kind'] == 'label':
-        if choice not in ('adopt', 'source'):
+        if choice not in ('adopt', 'source', 'ignore'):
             raise ValueError('Ungueltige Label-Aufloesung')
         for remote in (payload['source'], payload['target']):
             provider, root = current_peers[remote]
@@ -164,13 +185,24 @@ def resolve(store, repo, body, actor):
             actual = read_item(store, provider, root + '/labels/' + quote(payload['fields']['name'] if provider['kind'] == 'github' else payload['versions'][target]['lookup'], safe=''))
             if label_fields(actual) != label_fields(payload['fields']):
                 raise management.ProviderError('Ziel hat die Labelwerte nicht uebernommen. Bitte neu synchronisieren.')
+        if choice == 'ignore':
+            import reconciliation
+            reconciliation.hold(store, payload['scope'], 'labels:' + payload['identity'], 'ignore')
         with store.db() as db:
             db.execute('INSERT OR REPLACE INTO metadata_links VALUES(?,?,?,?)', (payload['scope'], 'labels:' + payload['identity'], payload['target_identifier'], fingerprint(payload['fields'])))
         result = {'status': 'success', 'category': 'labels', 'name': payload['fields']['name'], 'choice': choice}
+    elif payload['kind'] == 'git_review':
+        import reconciliation
+        if tools is None:
+            raise ValueError('Git-Werkzeuge fehlen')
+        result = reconciliation.resolve_git(store, repo, payload, choice, tools)
+    elif payload['kind'] == 'object_review':
+        import reconciliation
+        result = reconciliation.resolve(store, repo, payload, choice, tools=tools)
     elif payload['kind'] == 'comment_deletion':
         result = resolve_comment_deletion(store, repo, payload, current_peers, choice)
     elif payload['kind'] == 'mesh':
-        if choice not in payload['versions']:
+        if choice not in list(payload['versions']) + ['ignore']:
             raise ValueError('Bitte eine vorhandene Remote-Version auswaehlen')
         from metadata import MetadataSync
         from metadata_mesh import MetadataMesh
@@ -188,6 +220,9 @@ def resolve(store, repo, body, actor):
             if str(current['id']) != expected['id'] or network.fields(payload['category'], current, expected['copy']) != expected['fields']:
                 raise inspection.StaleState('Eintrag inzwischen geaendert. Bitte erneut synchronisieren.')
             rows[remote] = [current]
+        if choice == 'ignore':
+            import reconciliation
+            reconciliation.hold(store, payload['mesh'], payload['category'] + ':' + payload['origin'], 'ignore')
         # Only the selected version is marked changed. The existing reconciler
         # keeps this decision retryable when one remote rejects an update.
         for remote, expected in payload['versions'].items():

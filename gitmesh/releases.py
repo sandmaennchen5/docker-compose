@@ -157,7 +157,7 @@ class ReleaseSync:
         return {'name': source.get('name') or source['tag_name'], 'body': source.get('body', source.get('description', '')) or '',
                 'draft': bool(source.get('draft', False)), 'prerelease': bool(source.get('prerelease', False))}
 
-    def upsert(self, provider, root, source):
+    def upsert(self, provider, root, source, context=None):
         tag = source['tag_name']; kind = provider['kind']
         lookup = root + '/releases/' + (quote(tag, safe='') if kind == 'gitlab' else 'tags/' + quote(tag, safe=''))
         try:
@@ -166,6 +166,9 @@ class ReleaseSync:
             if exc.status != 404:
                 raise
             existing = None
+        if context is not None:
+            import reconciliation
+            reconciliation.review_release(self, context[0], context[1], provider, root, source, existing)
         fields = self.metadata(provider, source)
         if existing is None:
             return self.store.api(provider, root + '/releases', method='POST', body=dict(fields, tag_name=tag)), 'created'
@@ -220,6 +223,10 @@ class ReleaseSync:
         scope = provider['url'].rstrip('/') + root + '/releases/' + str(destination.get('id') or destination.get('tag_name', release['tag_name']))
         if row and row['repository'] != scope:
             row = None
+        if row and not existing and getattr(self, '_review_assets', False):
+            import reconciliation
+            item = reconciliation.prepare(self.store, repo, {'category':'assets','target':target,'source_key':str(asset['id']),'target_key':row['target_id'],'tag':release['tag_name']})
+            raise reconciliation.ReviewPending(item)
         if existing and not row:
             return 'conflict'
         if existing and row and str(existing['id']) != row['target_id']:
@@ -258,7 +265,10 @@ class ReleaseSync:
                 raise management.ProviderError('Release-Sync benoetigt API-Tokens fuer Quelle und Ziele', 400)
         source = providers[repo['source']]
         source_root = self.endpoint(source, repo['remotes'][repo['source']])
-        for release in reversed(self.pages(source, source_root + '/releases')):
+        self._review_assets = True
+        source_releases = self.pages(source, source_root + '/releases')
+        result['review_items'] = []
+        for release in reversed(source_releases):
             tag = release.get('tag_name')
             if not isinstance(tag, str) or 'tags/' + tag not in snapshots[repo['source']]:
                 continue
@@ -273,21 +283,44 @@ class ReleaseSync:
                     result['warnings'].append({'remote': remote, 'tag': tag, 'message': 'GitLab unterstuetzt keine Release-Entwuerfe; Entwurf uebersprungen'})
                     continue
                 try:
+                    import reconciliation
+                    if reconciliation.external_hold(self.store, repo, 'releases', remote, tag):
+                        result['releases'].append({'remote': remote, 'tag': tag, 'status': 'skipped'})
+                        continue
                     root = self.endpoint(provider, repo['remotes'][remote])
-                    destination, status = self.upsert(provider, root, release)
+                    destination, status = self.upsert(provider, root, release, context=(repo,remote))
+                    reconciliation.remember_release(self, repo, remote, provider, release, destination)
                     result['releases'].append({'remote': remote, 'tag': tag, 'status': status})
                     if provider['kind'] == 'gitlab' and release.get('prerelease'):
                         result['warnings'].append({'remote': remote, 'tag': tag, 'message': 'GitLab hat keinen Prerelease-Status'})
                     target_assets = {item['name']: item for item in self.assets(provider, root, destination)} if repo.get('release_assets', True) else {}
                     for asset in source_assets:
                         try:
+                            if reconciliation.external_hold(self.store, repo, 'assets', remote, str(asset['id'])):
+                                result['assets'].append({'remote': remote, 'tag': tag, 'name': asset.get('name'), 'status': 'skipped'})
+                                continue
                             status = self.copy_asset(repo, source, source_root, release, asset, remote, provider, root, destination, target_assets.get(asset.get('name')))
                             result['assets'].append({'remote': remote, 'tag': tag, 'name': asset.get('name'), 'status': status})
+                            if status == 'conflict':
+                                review = reconciliation.prepare(self.store, repo, {'category':'assets','target':remote,'source_key':str(asset['id']),'target_key':str(target_assets[asset['name']]['id']),'tag':tag})
+                                result['review_items'].append(review)
+                                result['assets'][-1]['resolution_id'] = review['resolution_id']
                         except (management.ProviderError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                            if hasattr(exc, 'item'):
+                                result['review_items'].append(exc.item)
+                                continue
                             result['errors'].append({'remote': remote, 'tag': tag, 'name': asset.get('name'), 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Anhang-Antwort'})
                 except (management.ProviderError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                    if hasattr(exc, 'item'):
+                        result['review_items'].append(exc.item)
+                        continue
                     result['errors'].append({'remote': remote, 'tag': tag, 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Release-Antwort'})
-        result['conflicts'] = sum(item['status'] == 'conflict' for item in result['assets'])
+        import reconciliation
+        try:
+            result['review_items'].extend(reconciliation.removed_releases(self, repo, {r.get('tag_name') for r in source_releases}))
+        except (management.ProviderError, ValueError, KeyError, TypeError) as exc:
+            result['errors'].append({'message': str(exc)})
+        result['conflicts'] = len(result['review_items']) + sum(item['status'] == 'conflict' and not item.get('resolution_id') for item in result['assets'])
         result['counts'] = {key: len(result[key]) for key in ('releases', 'assets', 'warnings', 'errors')}
         result['truncated'] = any(count > 200 for count in result['counts'].values())
         for key in ('releases', 'assets', 'warnings', 'errors'):

@@ -25,6 +25,7 @@ import releases
 import metadata
 import authorship
 import conflicts as conflict_store
+import reconciliation
 import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -418,7 +419,7 @@ def sync_wiki(repo):
     # Nested cache retains the same remote names for existing credential/SSH scoping.
     wiki = dict(repo, name=repo['name'] + '/wiki.git', direction='one-way', policy='ff-only',
                 sync_branches=True, branches=[], tags=False, releases=False, create_missing=False, _wiki_cache=True,
-                auto_webhooks=False, **{key: False for key in metadata.OPTIONS})
+                auto_webhooks=False, _review_parent=repo, **{key: False for key in metadata.OPTIONS})
     wiki['remotes'] = {name: url.removesuffix('.git') + '.wiki.git' for name, url in repo['remotes'].items()}
     status, details = synchronize(wiki)
     return dict(details, status=status)
@@ -427,10 +428,17 @@ def sync_wiki(repo):
 def synchronize(repo, dry_run=False):
     path, snapshots, created, missing = fetch_snapshots(repo, dry_run)
     actions, conflicts, plan = [], [], []
+    git_reviews, removed_refs = reconciliation.review_git_deletions(control(), repo, snapshots, repository_tools(), dry_run)
     direction, policy = repo.get('direction', 'bidirectional'), repo.get('policy', 'ff-only')
     source = repo.get('source')
     references = set(snapshots[source]) if direction == 'one-way' else set().union(*(set(s) for s in snapshots.values()))
+    references.update(removed_refs)
     for ref in sorted(references):
+        if ref in removed_refs:
+            conflicts.append(ref)
+            continue
+        if reconciliation.held(control(), reconciliation.git_scope(repo), ref):
+            continue
         if ref.startswith('heads/') and not repo.get('sync_branches', True):
             continue
         if ref.startswith('heads/') and repo.get('branches') and not any(fnmatch.fnmatchcase(ref[6:], pattern) for pattern in repo['branches']):
@@ -466,12 +474,12 @@ def synchronize(repo, dry_run=False):
     default = source_default_branch(repo, path, snapshots) if initial else None
     plan = prioritize_initial_default(repo, path, snapshots, plan, default)
     if dry_run:
-        return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing, 'selected_components': selected_components(repo), 'note': 'Vorschau plant Git-Referenzen; Metadaten, Wiki und LFS werden erst beim echten Sync verarbeitet.'}
+        return ('conflict' if conflicts else 'success'), {'plan': [repository_tools().describe_update(path, remote, ref, old, winner) for remote, ref, winner, old in plan[:200]], 'plan_truncated': len(plan) > 200, 'git_reviews': git_reviews, 'conflicts': conflicts, 'blocked': bool(conflicts and policy == 'reject'), 'missing_repositories': missing, 'selected_components': selected_components(repo), 'note': 'Vorschau plant Git-Referenzen; Metadaten, Wiki und LFS werden erst beim echten Sync verarbeitet.'}
     hooks = []
     if repo.get('auto_webhooks'):
         hooks = control().register_hooks(repo, load_config().get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''), refresh_secret=False)
     if conflicts and policy == 'reject':
-        return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
+        return 'conflict', {'updated': [], 'conflicts': conflicts, 'created_repositories': created, 'git_reviews': git_reviews, 'message': 'Gesamtes Profil wegen Konflikt übersprungen'}
     default_errors, default_warnings, blocked_initial = [], [], set()
     for remote in sorted(initial):
         if default and any(item[0] == remote and item[1] == default for item in plan):
@@ -493,7 +501,8 @@ def synchronize(repo, dry_run=False):
         git(path, *args, remote, f'{winner}:refs/{ref}')
         snapshots[remote][ref] = winner
         actions.append(f'{remote}: {ref} -> {winner[:12]}')
-    details = {'updated': actions, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks, 'selected_components': selected_components(repo)}
+    reconciliation.remember_git(control(), repo, snapshots, removed_refs)
+    details = {'updated': actions, 'git_reviews': git_reviews, 'conflicts': conflicts, 'created_repositories': created, 'webhooks': hooks, 'selected_components': selected_components(repo)}
     if repo.get('remote_providers') and not repo.get('_wiki_cache'):
         details['default_branch'] = control().apply_initial_defaults(repo, snapshots)
         details['default_branch']['errors'].extend(default_errors)
@@ -589,8 +598,16 @@ def _repository_action(action, body, actor):
             result = tools.change_ref(repo, body)
         elif action == 'merge':
             result = tools.merge(repo, body)
+        elif action == 'conflicts/resume':
+            result = reconciliation.resume_hold(control(), repo, body)
+        elif action == 'conflicts/inventory':
+            return reconciliation.inventory(control(), repo, body, tools)
+        elif action == 'conflicts/compare':
+            if body.get('category') in ('branches', 'tags', 'wiki'):
+                return reconciliation.prepare_git(control(), repo, body, tools)
+            return reconciliation.prepare(control(), repo, body)
         elif action == 'conflicts/resolve':
-            result = conflict_store.resolve(control(), repo, body, actor['name'])
+            result = conflict_store.resolve(control(), repo, body, actor['name'], tools=tools)
         elif action == 'webhooks/register':
             result = {'webhooks': control().register_hooks(repo, config.get('public_url', ''), os.environ.get(repo.get('webhook_secret_env', ''), ''))}
         else:
@@ -672,6 +689,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, transport.settings(control(), parse_qs(urlsplit(self.path).query).get('id', [''])[0]))
         if path == '/api/providers':
             return self.reply(200, {'providers': control().providers()})
+        if path == '/api/conflicts':
+            params = parse_qs(urlsplit(self.path).query)
+            return self.reply(200, reconciliation.catalog(control(), int(params.get('page', ['1'])[0])))
         if path == '/api/users':
             if actor['role'] != 'admin':
                 return self.reply(403, {'error': 'Administratorrechte erforderlich'})
@@ -740,7 +760,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if actor['role'] != 'admin':
             return self.reply(403, {'error': 'Lesebenutzer dürfen keine Änderungen vornehmen'})
-        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve'):
+        if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve', '/api/conflicts/compare', '/api/conflicts/inventory', '/api/conflicts/resume'):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if self.path == '/api/settings':
             if not save_config(body):

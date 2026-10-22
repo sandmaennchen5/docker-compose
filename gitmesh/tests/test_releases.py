@@ -161,6 +161,8 @@ class LocalReleaseApiTests(unittest.TestCase):
                 self.send_response(status); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
             def do_GET(self):
                 path = urlsplit(self.path).path
+                if path in ('/api/v1/repos/source/repo', '/api/v1/repos/target/repo'):
+                    return self.reply(200, {'id': 11 if '/source/' in path else 22})
                 if path == '/api/v1/repos/source/repo/releases':
                     return self.reply(200, [{'id': 1, 'tag_name': 'v1', 'name': 'Title ' + str(state['version']), 'body': 'Notes', 'draft': False, 'prerelease': False}])
                 if path == '/api/v1/repos/source/repo/releases/1/assets':
@@ -226,6 +228,13 @@ class LocalReleaseApiTests(unittest.TestCase):
 
 
 class ReleaseIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        data_patch = patch.object(mesh, 'DATA', Path(directory.name))
+        data_patch.start()
+        self.addCleanup(data_patch.stop)
+
     def test_release_sync_runs_after_successful_git_push_and_preview_never_writes(self):
         repo = {'name': 'demo', 'source': 'source', 'releases': True, 'remotes': {'source': 'https://source/repo', 'target': 'https://target/repo'}}
         events = []

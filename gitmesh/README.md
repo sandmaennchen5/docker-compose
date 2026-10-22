@@ -331,3 +331,42 @@ Eine erkannte Kommentar-Loeschung erscheint im Dashboard und unter Jobs & Protok
 - **Kopien behalten und Sync sperren** laesst die verbleibenden Kopien stehen; der geloeschte Kommentar wird nicht wiederhergestellt. Die Entscheidung gilt fuer diese Kommentargruppe, nicht fuer neue Kommentare.
 
 Vor einer Aktion werden Repository-Identitaeten, Zuordnungen, geloeschter Eintrag und alle angezeigten Texte erneut geprueft. Zwischenzeitliche Bearbeitungen verlangen einen neuen Sync und eine neue Entscheidung. Teilerfolge bei Loeschfehlern bleiben geloescht; ein erneuter Versuch kann die verbleibenden Kopien entfernen. Schreibzugriffe nutzen die gespeicherte Autoren-/Bot-Zuordnung. Nur Administratoren duerfen entscheiden, sobald kein Sync laeuft. Die Entscheidung und entfernten Kopien stehen in der Aktionshistorie. Protokolle quittieren oder loeschen trifft keine Loeschentscheidung. Bereits gesperrte Kommentare aus der vorherigen Version erhalten beim naechsten Sync ebenfalls eine Entscheidungskarte.
+
+
+## Zentrales Konfliktzentrum
+
+Das Menue **Konflikte** zeigt gespeicherte Entscheidungen mit Profil-/Typ-/Titelfilter und seitenweisem Nachladen, unabhaengig von der auf 200 Eintraege begrenzten Job-Anzeige. Daneben erscheinen Git-, Wiki-, Release- und Fehlermeldungen der letzten Jobs. **Objekte laden** zeigt die Kennungen der jeweiligen Plattform. Quelle ist der konfigurierte Start-Remote; das Ziel wird ausgewaehlt. Kennungen duerfen unterschiedlich sein. **Vergleichen** liest aktuelle Daten, zeigt beide Seiten und veraendert noch keine Remote-Daten. Nur fuer den Typ verfuegbare Aktionen werden angeboten.
+
+| Typ | Vergleich und Entscheidungen |
+| --- | --- |
+| Issues | Titel, Text, Status, Vertraulichkeit; Quellwerte uebernehmen, am Ziel wiederherstellen, schliessen, ignorieren. Zugeordnete GitLab-Issues koennen explizit geloescht werden; GitHub bietet hier keine REST-Loeschaktion. |
+| PRs/MRs | Titel, Text, Status und Branch-Informationen; Quellwerte, schliessen, ignorieren. Wiederherstellung offener PRs nur mit passenden Zielbranches und exakt vorhandenem Head-Commit; kein automatisches Mergen oder Rekonstruieren historischer Merge-Historie. Zugeordnete GitLab-MRs koennen geloescht werden. |
+| Kommentare | Texte und Herkunft; bei Loeschkonflikten fehlende Kopien wiederherstellen, verbleibende zugeordnete Kopien loeschen oder behalten. Allgemeine Einzelvergleiche benoetigen Kommentar-ID und fuer GitLab die Issue-Nummer bzw. `mr:NUMMER`. Interne/System-Kommentare werden nicht uebernommen. |
+| Labels | Name, Farbe, Beschreibung; Quelle uebernehmen, zuordnen, zugeordnete Kopie loeschen, wiederherstellen oder ignorieren. |
+| Meilensteine | Titel, Beschreibung, Termin, Status; Versionswahl, fehlende Kopien wiederherstellen, zugeordnete Kopien loeschen oder behalten/ignorieren. |
+| Releases | Titel, Text, Status pro Tag; uebernehmen, wiederherstellen, beobachtete/zugeordnete Kopie loeschen oder ignorieren. Der Tag selbst wird nicht mitgeloescht. |
+| Release-Anhaenge | Metadaten wie Name, Groesse, URL und vorhandene Pruefsumme; Quell-Binaerdatei kopieren/ersetzen, fehlenden Anhang wiederherstellen, zugeordneten Anhang loeschen oder ignorieren. Kein visueller Binaer-Diff. Zuerst muss das zugehoerige Release existieren. |
+| Repository-Details | Beschreibung, Website und Topics vergleichen und uebernehmen oder ignorieren; keine Repository-Loeschung. |
+| Branches/Tags | Objekt-IDs und Git-Historien vergleichen, Quellstand am Ziel uebernehmen, Referenz wiederherstellen/loeschen oder ignorieren. Annotierte Tags werden als Originalobjekt uebertragen. Branches koennen konfliktfrei zusammengefuehrt werden; Inhaltskonflikte bleiben zur lokalen Aufloesung erhalten. |
+| Wiki | Vergleich und Referenzaktionen am separaten Wiki-Git, wie bei Branches. Die Wiki-Funktion wird dadurch nicht auf dem Provider aktiviert. |
+
+Issues, PRs, Labels und Einweg-Metadaten erhalten nach beobachteten Synchronisierungen Vergleichsstaende. Abweichende Zielwerte oder geloeschte Quellen werden dann zur Entscheidung gestellt. Der bidirektionale Abgleich behandelt fehlende bekannte Kommentare und Meilensteine ebenfalls als Entscheidung und stellt sie nicht automatisch wieder her. Releases merken sich beobachtete Zielstaende und konkrete Repository-Identitaeten. Eine beliebige historische Loeschung vor dem ersten beobachteten Stand kann nicht nachtraeglich rekonstruiert werden; dafuer kann ein manueller Vergleich mit den bekannten Kennungen geladen werden. API-Fehler sind keine bestaetigten Loeschungen.
+
+**Ignorieren** sperrt den Eintrag im weiteren automatischen Abgleich. Schliessen/Loeschen einzelner Zielobjekte setzt ebenfalls eine Sperre, damit ein spaeterer Sync die Entscheidung nicht direkt rueckgaengig macht. Ignorierte Issues werden einschliesslich ihrer Kommentare zu diesem Ziel ausgelassen. Sperren erscheinen im Konfliktzentrum unter Profil und Objektkennung; **Sperre aufheben** erlaubt den Abgleich wieder. Bei Kommentar-/Meilenstein-Loeschentscheidungen wird damit eine erneute Entscheidung moeglich. Eine geloeschte Git-Referenz wird profilweit ausgenommen, bis ihre Sperre aufgehoben wird. Neue unabhaengige Objekte bleiben synchronisierbar.
+
+Vor jeder Aktion prueft GitMesh Konfiguration, Repository-Identitaeten, Objekt-IDs und angezeigte Felder bzw. Git-Objektstaende erneut. Veraltete Vergleiche werden abgelehnt. Git-Schreibzugriffe verwenden explizite Leases; Schutzregeln bleiben wirksam. Nur Administratoren duerfen Entscheidungen ausfuehren; Lesebenutzer koennen gespeicherte Vergleiche sehen. Aktionen werden in der Job-Historie protokolliert und laufen nicht gleichzeitig mit einem Worker-Sync. API-Schreibaktionen besitzen nicht bei jedem Provider eine atomare Compare-and-swap-Funktion; gleichzeitige externe Bearbeitungen koennen daher nicht vollstaendig ausgeschlossen werden.
+
+Wiederhergestellte Issues/PRs/Kommentare koennen neue Nummern, Zeitstempel und Token-Autoren erhalten; komplette urspruengliche Verlaeufe werden nicht rekonstruiert. Mehrere Remote-Aktionen sind nicht atomar. Bei Teilerfolgen erneut vergleichen. LFS-Objekte gehoeren zur Git-Historie: ihre Referenz-/Pointer-Version wird ueber den Branchvergleich entschieden; Transportfehler werden angezeigt und erneut synchronisiert, keine unreferenzierten LFS-Objekte automatisch geloescht. API-Rechte und serverseitige Loeschmoeglichkeiten bestimmen, welche Aktionen tatsaechlich ausgefuehrt werden koennen.
+
+Web und Worker muessen gemeinsam auf das neue Image aktualisiert werden; `reconciliation.py` ist im Docker-Image enthalten. Neue SQLite-Tabellen werden automatisch ergaenzt. Es ist keine Aenderung vorhandener Profile erforderlich.
+
+
+Bei Git-Referenzen werden nach erfolgreichen Laeufen auch die zuvor vorhandenen Remotestaende gespeichert. Fehlt spaeter ein vorher bekannter Branch, Tag oder Wiki-Branch, wird diese Referenz vor weiteren Pushes angehalten und als Vergleich zur Entscheidung angezeigt. Das gilt nicht fuer neue Ziele ohne beobachteten Stand. Einweg-Kommentar-Loeschungen und manuelle Statusaenderungen an Ziel-Issues werden ebenfalls geprueft. Wiederherstellung nutzt eine noch vorhandene Quellversion; geloeschte Nummern und vollstaendige historische Diskussionen koennen nicht rekonstruiert werden.
+
+### API-Limits
+
+GitLab.com-API-Aufrufe werden je Host gemeinsam fuer alle Profile, Tokens und Worker ueber die Datenbank auf einen Aufruf je 0,9 Sekunden begrenzt (maximal etwa 4.000 pro Stunde). Das laesst Reserve fuer die Nutzung ausserhalb von GitMesh; weitere Clients und Git-/LFS-Zugriffe sind nicht im lokalen Budget enthalten. Selbst betriebene GitLab-Instanzen werden nicht pauschal gedrosselt.
+
+HTTP 429 setzt fuer jeden Provider eine persistente Sperrfrist gemaess `Retry-After` (Sekunden oder HTTP-Datum, sonst 60 Sekunden). Weitere API-Aufrufe brechen waehrenddessen ohne Netzwerkanfrage mit einem Pausenhinweis ab. Schreibzugriffe werden nicht blind wiederholt; nach Ablauf kann der naechste regulaere oder manuelle Sync fortfahren.
+
+Ein beim ersten Sync leeres Git-Ziel wird aus vorhandenen Referenzen befuellt; fehlende Referenzen loeschen keine vorhandenen auf anderen Remotes. Ein spaeteres Verschwinden bereits beobachteter Referenzen wird im Konfliktcenter geprueft. Ein Repository mit README-/Initial-Commit ist nicht leer und kann einen Historienkonflikt ausloesen; standardmaessig `ff-only` verwenden.

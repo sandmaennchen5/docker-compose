@@ -469,6 +469,29 @@ async function main() {
     await page.getByRole('status').filter({hasText: 'Transport gespeichert.'}).waitFor();
     await page.waitForFunction(() => activeSave === null);
     assert.equal((await api('/api/transport?id=' + target.id)).protocol, 'https');
+    // Central review page: inventory uses platform IDs and actions stay explicit.
+    await page.route('**/api/conflicts?page=*', route => route.fulfill({json: {items: [], holds: [], page: 1, total: 0, next_page: null}}));
+    await page.route('**/api/conflicts/inventory', route => route.fulfill({json: {items: {source: [{key: '15', name: 'Example issue'}], target: [{key: '10', name: 'Copied issue'}]}}}));
+    let comparePayload;
+    await page.route('**/api/conflicts/compare', async route => {
+      comparePayload = route.request().postDataJSON();
+      await route.fulfill({json: {category: 'issues', status: 'conflict', kind: 'object_review', name: 'Example issue', target: 'target', item: 'issues:15', resolution_id: 'generic-review', choices: ['restore', 'ignore'], values: {source: {title: 'Example issue', status: 'Vorhanden'}, target: {status: 'Fehlt / geloescht'}}}});
+    });
+    await page.locator('[data-page=conflicts]').click();
+    await page.locator('#page-conflicts').waitFor({state: 'visible'});
+    await page.locator('#conflict-inventory').click();
+    await page.waitForFunction(() => activeSave === null);
+    await page.locator('#conflict-inventory-list').getByRole('button', {name: '15 · Example issue', exact: true}).click();
+    await page.locator('#conflict-inventory-list').getByRole('button', {name: '10 · Copied issue', exact: true}).click();
+    await page.locator('#conflict-compare button').filter({hasText: /^Vergleichen$/}).click();
+    await page.locator('#conflict-comparison').getByRole('button', {name: 'Am Ziel wiederherstellen', exact: true}).waitFor();
+    await page.setViewportSize({width: 390, height: 844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, 'Conflict center must fit a mobile screen');
+    await page.setViewportSize({width: 1440, height: 1000});
+    assert.equal(comparePayload.source_key, '15'); assert.equal(comparePayload.target_key, '10');
+    assert.equal(await page.locator('#conflict-comparison').getByRole('button', {name: 'Zielkopie loeschen', exact: true}).count(), 0);
+    await page.waitForFunction(() => activeSave === null);
+    await page.unroute('**/api/conflicts/compare'); await page.unroute('**/api/conflicts/inventory'); await page.unroute('**/api/conflicts?page=*');
     await page.locator('[data-page=users]').click();
     for (const [name, role] of [['test-admin', 'admin'], ['test-reader', 'readonly']]) {
       await page.locator('#user-name').fill(name);
@@ -487,6 +510,8 @@ async function main() {
     await page.locator('#workspace').waitFor({state: 'visible'});
     assert.equal(await page.locator('[data-page=users]').isVisible(), false);
     assert.equal(await page.locator('[data-page=groups]').isVisible(), false);
+    await page.locator('[data-page=conflicts]').click();
+    assert.equal(await page.locator('#conflict-compare').isVisible(), false);
     await page.locator('[data-page=providers]').click();
     assert.equal(await page.locator('#transport-form').isVisible(), false);
     assert.equal(await page.locator('#authorship-form').isVisible(), false);

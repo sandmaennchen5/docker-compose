@@ -42,6 +42,7 @@ function navigate(page) {
     document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('pending-page', b.dataset.page === page));
     return;
   }
+  if (page === 'conflicts') { setupConflictForm(); loadConflictCenter().catch(showError); }
   if (page === 'discovery' && discovered.length) renderDiscovery();
   document.querySelectorAll('.page').forEach(p => { p.hidden = p.id !== 'page-' + page; });
   document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('selected', b.dataset.page === page));
@@ -101,6 +102,7 @@ function resetProviderForm() {
 function clearSession() {
   clearTimeout(saveNoticeTimer); el('save-progress').hidden = true;
   openedJobDetails.clear(); openedMappings.clear(); openedConflictValues.clear();
+  el('conflict-list').replaceChildren(); el('conflict-other').replaceChildren(); el('conflict-comparison').replaceChildren(); el('conflict-inventory-list').replaceChildren();
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
   for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'authorship-form', 'shared-form', 'group-form']) el(id).reset();
@@ -383,7 +385,7 @@ async function loadUsers() {
 function profileCard(repo, previous) {
   const job = latest.jobs.find(j => j.profile === repo.name);
   const diagnostic = latest.jobs.find(j => j.profile === repo.name && !['queued', 'running'].includes(j.status) && !String(j.origin).startsWith('conflicts/resolve:'));
-  const signature = JSON.stringify([repo, job, diagnostic, latest.schedules[repo.name], latest.resolved_conflicts]);
+  const signature = JSON.stringify([actor?.role, repo, job, diagnostic, latest.schedules[repo.name], latest.resolved_conflicts]);
   if (previous?._profileSignature === signature) return previous;
   const card = node('article', '', 'card ' + (job?.reset_at ? 'reset' : job?.status || ''));
   card.append(node('h2', repo.name), node('p', repo.remotes.join(repo.direction === 'one-way' ? ' → ' : ' ↔ ')),
@@ -414,7 +416,7 @@ function profileCard(repo, previous) {
 function conflictPanel(job, scope) {
   const data = job.details || {}, metadata = data.metadata || (data.items && data.counts ? data : {}), root = node('section', '', 'conflict-panel');
   const git = data.conflicts || [];
-  const entries = (metadata.items || []).filter(item => item.status === 'conflict');
+  const entries = [...(metadata.items || []).filter(item => item.status === 'conflict'), ...(data.releases?.review_items || []), ...(data.git_reviews || []), ...(data.wiki?.git_reviews || [])];
   const extra = data.releases?.conflicts || (data.wiki?.status === 'conflict' ? 1 : 0);
   const errors = [...(metadata.errors || []), ...(data.default_branch?.errors || []), ...(data.releases?.errors || [])];
   if (!git.length && !entries.length && !metadata.counts?.conflict && !extra && !errors.length && job.status !== 'error') return null;
@@ -451,7 +453,7 @@ function conflictPanel(job, scope) {
     if (resolved) row.append(node('p', 'Aufgeloest. Dieses Protokoll zeigt den damaligen Konflikt.', 'resolved-conflict'));
     else if (admin() && item.resolution_id) {
       for (const choice of item.choices || []) {
-        const label = item.kind === 'comment_deletion' ? (choice === 'delete_copies' ? 'Verbleibende Kopien loeschen' : 'Kopien behalten und Sync sperren') : item.category === 'labels' ? (choice === 'adopt' ? 'Vorhandenes Label zuordnen' : 'Quellwerte uebernehmen') : 'Version von ' + choice + ' uebernehmen';
+        const label = choice === 'ignore' ? 'Ignorieren und Sync sperren' : ['object_review', 'git_review'].includes(item.kind) ? ({ignore: 'Ignorieren und Sync sperren', resume: 'Sperre aufheben', restore: 'Am Ziel wiederherstellen', apply_source: 'Quellstand am Ziel uebernehmen', delete: 'Zielkopie loeschen', close: 'Am Ziel schliessen', merge: 'Am Ziel zusammenfuehren'})[choice] : item.kind === 'comment_deletion' ? (choice === 'restore' ? 'Fehlende Kopien wiederherstellen' : choice === 'delete_copies' ? 'Verbleibende Kopien loeschen' : 'Kopien behalten und Sync sperren') : item.category === 'labels' ? (choice === 'adopt' ? 'Vorhandenes Label zuordnen' : 'Quellwerte uebernehmen') : 'Version von ' + choice + ' uebernehmen';
         row.append(button(label, () => resolveConflict(job, item, choice)));
       }
       if (item.category === 'labels') row.append(node('small', 'Zuordnen behaelt die aktuellen Zielwerte; spaetere Quellaenderungen werden wieder synchronisiert.'));
@@ -468,17 +470,18 @@ function conflictPanel(job, scope) {
   return root;
 }
 async function resolveConflict(job, item, choice) {
-  const text = item.kind === 'comment_deletion' ? (choice === 'delete_copies' ? 'Die angezeigten zugeordneten Kopien auf den anderen Plattformen endgueltig loeschen? Vorhandene Originalkommentare bleiben erhalten. Der weitere Abgleich dieses Kommentars bleibt gesperrt.' : 'Vorhandene Kopien behalten und den weiteren Abgleich dieses Kommentars dauerhaft sperren?') : item.category === 'labels' && choice === 'adopt' ? 'Vorhandenes Label zuordnen und seine aktuellen Zielwerte behalten? Spaetere Quellaenderungen werden synchronisiert.' : 'Die ausgewaehlten Werte uebernehmen und die abweichenden Werte dieses Eintrags ersetzen?';
+  const text = choice === 'ignore' ? 'Diesen Eintrag dauerhaft vom automatischen Abgleich ausnehmen? Die Sperre kann im Konfliktzentrum aufgehoben werden.' : ['object_review', 'git_review'].includes(item.kind) ? ('Aktion: ' + choice + '. Nur das angezeigte Ziel wird geaendert. Loeschen kann Inhalte und Anhaenge unwiderruflich entfernen. Ignorieren/Schliessen/Loeschen sperrt den weiteren automatischen Abgleich dieses Eintrags. Fortfahren?') : item.kind === 'comment_deletion' ? (choice === 'restore' ? 'Fehlende Kopien aus den vorhandenen Versionen wiederherstellen? Nummern und Autoren koennen sich aendern.' : choice === 'delete_copies' ? 'Die angezeigten zugeordneten Kopien auf den anderen Plattformen endgueltig loeschen? Vorhandene Originalkommentare bleiben erhalten. Der weitere Abgleich dieses Kommentars bleibt gesperrt.' : 'Vorhandene Kopien behalten und den weiteren Abgleich dieses Kommentars dauerhaft sperren?') : item.category === 'labels' && choice === 'adopt' ? 'Vorhandenes Label zuordnen und seine aktuellen Zielwerte behalten? Spaetere Quellaenderungen werden synchronisiert.' : 'Die ausgewaehlten Werte uebernehmen und die abweichenden Werte dieses Eintrags ersetzen?';
   if (!confirm(text)) return;
   return runSave(null, async () => {
     const result = await request('/api/conflicts/resolve', 'POST', {profile: job.profile, conflict_id: item.resolution_id, choice});
     await refresh();
+    if (!el('page-conflicts').hidden) await loadConflictCenter();
     if (result.status !== 'success') throw new Error('Aufloesung nicht vollstaendig abgeschlossen. Bitte das neue Protokoll pruefen.');
     message('Konflikt aufgeloest. Fuer den aktuellen Gesamtstatus einen neuen Sync starten.');
   });
 }
 function jobCard(job, previous, scope) {
-  const signature = JSON.stringify([job, latest.resolved_conflicts]);
+  const signature = JSON.stringify([actor?.role, job, latest.resolved_conflicts]);
   if (previous?._jobSignature === signature) return previous;
   const card = node('article', '', 'card ' + (job.reset_at ? 'reset' : job.status));
   card.dataset.jobId = String(job.id); card._jobSignature = signature;
@@ -512,7 +515,9 @@ function renderJobs() {
 async function refresh() {
   if (!token) return;
   try {
-    latest = await request('/api/status');
+    const sessionToken = token, response = await request('/api/status');
+    if (token !== sessionToken) return;
+    latest = response;
     const stats = [['Profile', latest.repositories.length], ['Aktive Jobs', Object.keys(latest.worker.active).length],
       ['Warteschlange', latest.jobs.filter(j => j.status === 'queued').length], ['Konflikte / Fehler', latest.jobs.filter(j => !j.reset_at && ['conflict', 'error'].includes(j.status)).length]];
     el('stats').replaceChildren(...stats.map(([label, value]) => { const c = node('article', '', 'stat'); c.append(node('strong', String(value)), node('span', label)); return c; }));
@@ -594,6 +599,81 @@ function importDiscovery() {
   if (!count) throw new Error('Mindestens ein Repository auswählen.');
   navigate('profiles'); message(count + ' Profile als Entwurf übernommen. Prüfen, aktivieren und Einstellungen speichern.');
 }
+function setupConflictForm() {
+  const profiles = latest?.repositories || [], selected = el('conflict-profile').value;
+  el('conflict-profile').replaceChildren(...profiles.map(r => { const o = node('option', r.name); o.value = r.name; return o; }));
+  if (profiles.some(r => r.name === selected)) el('conflict-profile').value = selected;
+  updateConflictTarget();
+}
+function updateConflictTarget() {
+  const repo = latest?.repositories.find(r => r.name === el('conflict-profile').value), old = el('conflict-target').value;
+  el('conflict-target').replaceChildren(...(repo?.remotes || []).filter(n => n !== repo.source).map(n => { const o = node('option', n); o.value = n; return o; }));
+  if ([...el('conflict-target').options].some(o => o.value === old)) el('conflict-target').value = old;
+  el('conflict-source-info').textContent = 'Quelle: ' + (repo?.source || 'Kein Profil');
+}
+function conflictRequest() {
+  return {profile: el('conflict-profile').value, target: el('conflict-target').value, category: el('conflict-category').value,
+    source_key: el('conflict-source-key').value, target_key: el('conflict-target-key').value,
+    source_ticket: el('conflict-source-ticket').value, target_ticket: el('conflict-target-ticket').value, tag: el('conflict-tag').value};
+}
+async function loadConflictCenter(page = 1, append = false) {
+  const result = await request('/api/conflicts?page=' + page);
+  if (!append) el('conflict-list').replaceChildren();
+  const filter = el('conflict-filter').value.toLowerCase();
+  for (const item of result.items) {
+    if (filter && !JSON.stringify([item.profile, item.category, item.name]).toLowerCase().includes(filter)) continue;
+    const card = node('article', '', 'card'); card.append(node('h2', item.profile));
+    const panel = conflictPanel({id: item.resolution_id, profile: item.profile, status: 'conflict', details: {metadata: {items: [item], counts: {conflict: 1}}}}, 'center');
+    if (panel) card.append(panel); el('conflict-list').append(card);
+  }
+  if (result.next_page) el('conflict-list').append(button('Weitere Konflikte laden', async () => { await loadConflictCenter(result.next_page, true); }));
+  if (!append && admin()) for (const hold of result.holds || []) {
+    const row = node('article', '', 'card'); row.append(node('strong', hold.profile + ': ' + hold.item), node('p', 'Vom automatischen Abgleich ausgenommen: ' + hold.action));
+    row.append(button('Sperre aufheben', () => runSave(null, async () => {
+      if (!confirm('Automatischen Abgleich dieses Eintrags wieder zulassen?')) return;
+      await request('/api/conflicts/resume', 'POST', {profile: hold.profile, hold_id: hold.hold_id}); await loadConflictCenter();
+    }))); el('conflict-list').append(row);
+  }
+  if (!append && !result.items.length) el('conflict-list').append(node('p', 'Keine offenen gespeicherten Konflikte.'));
+  if (!append) {
+    el('conflict-other').replaceChildren();
+    for (const job of latest?.jobs || []) {
+      if (!(job.status === 'error' || job.details?.conflicts?.length || job.details?.wiki?.status === 'conflict' || job.details?.releases?.conflicts)) continue;
+      const card = node('article', '', 'card'); card.append(node('strong', job.profile), node('pre', JSON.stringify({git: job.details.conflicts, wiki: job.details.wiki, releases: job.details?.releases?.assets?.filter(a => a.status === 'conflict'), errors: job.details?.metadata?.errors || job.details?.errors || job.details?.message || job.details?.git_error, lfs: job.details?.lfs}, null, 2)));
+      if (admin()) card.append(button('Im Vergleich pruefen', () => { el('conflict-profile').value = job.profile; updateConflictTarget(); el('conflict-compare').scrollIntoView({behavior: 'smooth'}); }));
+      if (admin()) card.append(button('Erneut synchronisieren', async () => { await request('/api/sync', 'POST', {profile: job.profile}); message('Neue Pruefung eingereiht.'); }));
+      el('conflict-other').append(card);
+    }
+  }
+}
+el('conflict-profile').addEventListener('change', updateConflictTarget);
+el('conflict-reload').addEventListener('click', () => loadConflictCenter().catch(showError));
+el('conflict-filter').addEventListener('change', () => loadConflictCenter().catch(showError));
+saveForm('conflict-compare', async () => {
+  const payload = conflictRequest(), result = await request('/api/conflicts/compare', 'POST', payload);
+  const panel = conflictPanel({id: result.resolution_id, profile: payload.profile, status: 'conflict', details: {metadata: {items: [result], counts: {conflict: 1}}}}, 'comparison');
+  el('conflict-comparison').replaceChildren(panel);
+  if (result.comparison) el('conflict-comparison').append(node('pre', JSON.stringify(result.comparison, null, 2)));
+  message('Vergleich geladen. Noch keine Remote-Aenderung ausgefuehrt.');
+});
+el('conflict-inventory').addEventListener('click', () => runSave(null, async () => {
+  const payload = conflictRequest(), result = await request('/api/conflicts/inventory', 'POST', payload);
+  el('conflict-inventory-list').replaceChildren();
+  if (result.items) {
+    for (const [remote, rows] of Object.entries(result.items)) {
+      const section = node('div', '', 'card'); section.append(node('h3', remote));
+      for (const row of rows) section.append(button(row.key + ' · ' + row.name, () => { el(remote === payload.target ? 'conflict-target-key' : 'conflict-source-key').value = row.key; }));
+      el('conflict-inventory-list').append(section);
+    }
+  } else {
+    for (const remote of result.remotes || []) {
+      const section = node('div', '', 'card'); section.append(node('h3', remote.name));
+      for (const row of remote.refs || []) section.append(button(row.ref + ' · ' + row.oid.slice(0,12), () => { el('conflict-source-key').value = row.ref.replace(/^(heads|tags)\//, ''); }));
+      el('conflict-inventory-list').append(section);
+    }
+  }
+}).catch(showError));
+
 document.querySelectorAll('[data-page]').forEach(b => b.addEventListener('click', () => navigate(b.dataset.page)));
 el('login').addEventListener('submit', async e => {
   e.preventDefault();

@@ -4,6 +4,7 @@ import json
 from urllib.parse import quote
 import management
 import authorship
+import reconciliation
 import conflicts as conflict_store
 from metadata_mesh import MetadataMesh
 from releases import ReleaseSync
@@ -59,10 +60,14 @@ class MetadataSync(ReleaseSync):
         body = MetadataMesh.clean_copy(item.get('body', item.get('description')) or '')
         return body + '\n\n---\nOriginal: ' + origin['original_url'] + '\nAutor: ' + origin['author_name']
 
-    def upsert(self, category, identity, fields, collection, existing=None, identifier=None, update_collection=None, source_item=None):
+    def upsert(self, category, identity, fields, collection, existing=None, identifier=None, update_collection=None, source_item=None, source_collection=None):
         p, root = self.target_provider, self.target_root
         identifier = identifier or (lambda x: x.get('iid', x.get('number', x.get('id'))))
         row = self.mapping(category, identity)
+        self._review_seen.add(category + ':' + str(identity))
+        if reconciliation.held(self.store, self.scope, category + ':' + str(identity)):
+            self.record(category, 'skipped', identity, reason='Eintrag durch Entscheidung ignoriert')
+            return existing, False
         signature = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
         if existing is not None and not row:
             if category == 'labels':
@@ -78,7 +83,7 @@ class MetadataSync(ReleaseSync):
                            'bindings': {self.repo['source']: conflict_store.binding(self.source_provider, self.source_root, self.source_repository_id), self.target: conflict_store.binding(p, root, self.target_repository_id)}}
                 resolution_id = conflict_store.remember(self.store, self.repo, payload)
                 self.record(category, 'conflict', identity, name=fields['name'], reason='Gleichnamiges vorhandenes Label ist noch nicht zugeordnet und hat andere Werte.',
-                            values={n: v['fields'] for n, v in versions.items()}, resolution_id=resolution_id, choices=['adopt', 'source'])
+                            values={n: v['fields'] for n, v in versions.items()}, resolution_id=resolution_id, choices=['adopt', 'source', 'ignore'])
             else:
                 self.record(category, 'conflict', identity, name=fields.get('title', fields.get('name', str(identity))), reason='Vorhandener Eintrag ist noch nicht zugeordnet')
             return existing, False
@@ -91,12 +96,18 @@ class MetadataSync(ReleaseSync):
             except management.ProviderError as exc:
                 if exc.status != 404:
                     raise
+                if reconciliation.guard(self, category, identity, None, fields, source_item):
+                    return None, False
                 self.record(category, 'conflict', identity, reason='Zugeordneter Zieleintrag wurde geloescht oder ist nicht mehr sichtbar')
                 return None, False
+        if reconciliation.guard(self, category, identity, existing, fields, source_item):
+            return existing, False
         if row and row['signature'] == signature:
+            if existing is not None:
+                reconciliation.track(self, category, identity, source_item, existing, fields, source_collection)
             self.record(category, 'unchanged', identity)
             return existing, True
-        origin = self.authors.origin(self.source_provider, self.source_root, category, source_item) if source_item is not None else None
+        origin = self.authors.origin(self.source_provider, self.source_root, category, source_item) if source_item is not None and category in ('issues', 'pull_requests', 'comments') else None
         writer = self.authors.writer(p, root, category, existing, origin) if origin else p
         if existing is None:
             if category == 'milestones' and p['kind'] == 'github' and fields.get('due_on') is None:
@@ -115,6 +126,7 @@ class MetadataSync(ReleaseSync):
         if origin:
             self.authors.remember(p, root, category, result, writer, origin, created=status == 'created')
         self.remember(category, identity, value, signature)
+        reconciliation.track(self, category, identity, source_item, result, fields, source_collection)
         info = {'writer': self.authors.account(writer)['login']} if origin and (p['id'] in self.authors.rules or origin.get('tracked')) else {}
         self.record(category, status, identity, **info)
         return result, True
@@ -125,7 +137,7 @@ class MetadataSync(ReleaseSync):
         mapped = {}
         for label in self.pages(self.source_provider, self.source_root + '/labels'):
             fields = {'name': label['name'], 'color': ('#' if p['kind'] == 'gitlab' else '') + label.get('color', '808080').lstrip('#'), 'description': label.get('description') or ''}
-            item, owned = self.upsert('labels', label['id'], fields, '/labels', existing.get(label['name']), identifier=(lambda x: x['name']) if p['kind'] == 'github' else lambda x: x['id'])
+            item, owned = self.upsert('labels', label['id'], fields, '/labels', existing.get(label['name']), identifier=(lambda x: x['name']) if p['kind'] == 'github' else lambda x: x['id'], source_item=label)
             if item:
                 mapped[label['name']] = item
         return mapped
@@ -138,7 +150,7 @@ class MetadataSync(ReleaseSync):
             fields = {'title': milestone['title'], 'description': milestone.get('description') or ''}
             due = milestone.get('due_on') or milestone.get('due_date')
             fields['due_date' if p['kind'] == 'gitlab' else 'due_on'] = (due[:10] if p['kind'] == 'gitlab' else due[:10] + 'T00:00:00Z') if due else None
-            item, owned = self.upsert('milestones', milestone['id'], fields, '/milestones', existing.get(milestone['title']), identifier=lambda x: x['id'] if p['kind'] == 'gitlab' else x.get('number', x.get('id')))
+            item, owned = self.upsert('milestones', milestone['id'], fields, '/milestones', existing.get(milestone['title']), identifier=lambda x: x['id'] if p['kind'] == 'gitlab' else x.get('number', x.get('id')), source_item=milestone)
             if item:
                 mapped[milestone['id']] = item
             if owned and item:
@@ -199,6 +211,7 @@ class MetadataSync(ReleaseSync):
                             fields['title'] = 'WIP: ' + fields['title']
             item, owned = self.upsert(category, identity, fields, destination, existing, source_item=row)
             if not item or not owned:
+                self._blocked_tickets.add((self.target, category, str(identity)))
                 continue
             number = self.number(item, tk)
             self.sync_relations(repo, row, item, destination)
@@ -247,11 +260,14 @@ class MetadataSync(ReleaseSync):
             existing = next((x for x in targets if marker in (x.get('body') or '')), None)
             if existing and not self.mapping('comments', identity):
                 self.remember('comments', identity, existing['id'], '')
-            self.upsert('comments', identity, {'body': self.authored_text(note, 'comments') + '\n\n' + marker}, tp, existing, identifier=lambda x: x['id'], update_collection=tp if tk == 'gitlab' else '/issues/comments', source_item=note)
+            self._comment_target_ticket = ('mr:' if pull and tk == 'gitlab' else '') + str(tn)
+            self.upsert('comments', identity, {'body': self.authored_text(note, 'comments') + '\n\n' + marker}, tp, existing, identifier=lambda x: x['id'], update_collection=tp if tk == 'gitlab' else '/issues/comments', source_item=note, source_collection=sp)
 
     def sync(self, repo, snapshots):
         self.result = {'items': [], 'counts': {}, 'warnings': [], 'errors': []}
         self.repo = repo
+        self._review_seen = set()
+        self._blocked_tickets = set()
         self.authors = authorship.Router(self.store)
         self.source_provider = self.store.provider(repo['remote_providers'][repo['source']], reveal=True)
         self.source_root = self.endpoint(self.source_provider, repo['remotes'][repo['source']])
@@ -302,6 +318,9 @@ class MetadataSync(ReleaseSync):
                             raise management.ProviderError('Abhaengige Labels/Meilensteine fehlgeschlagen; Tickets uebersprungen')
                         self.sync_tickets(repo, snapshots, category == 'pull_requests')
                     else:
+                        if reconciliation.held(self.store, self.scope, 'repository_details:' + str(self.source_repository_id)):
+                            self.record(category, 'skipped', 'repository_details', reason='Repository-Details ignoriert')
+                            continue
                         kind = self.target_provider['kind']
                         fields = {'description': source_repository.get('description') or ''}
                         if kind != 'gitlab' and any(key in source_repository for key in ('homepage', 'website')):
@@ -313,14 +332,25 @@ class MetadataSync(ReleaseSync):
                         if kind == 'gitlab' and topic_changed:
                             fields['topics'] = topics
                             changed = True
+                        watched = dict(fields)
+                        if isinstance(topics, list):
+                            watched['topics'] = topics
+                        if reconciliation.guard(self, category, self.source_repository_id, target_repository, watched, source_repository):
+                            continue
                         if changed:
                             self.store.api(self.target_provider, self.target_root, method='PUT' if kind == 'gitlab' else 'PATCH', body=fields)
                         if kind != 'gitlab' and topic_changed:
                             self.store.api(self.target_provider, self.target_root + '/topics', method='PUT', body={'names' if kind == 'github' else 'topics': topics})
+                        observed = dict(target_repository, **watched) if changed or topic_changed else target_repository
+                        reconciliation.track(self, category, self.source_repository_id, source_repository, observed, watched)
                         self.record(category, 'updated' if changed or topic_changed else 'unchanged', 'description/website/topics')
                 except (management.ProviderError, KeyError, TypeError, ValueError, AttributeError) as exc:
                     failed.add(category)
                     self.result['errors'].append({'target': self.target, 'category': category, 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Metadaten-Antwort'})
+            try:
+                reconciliation.source_deletions(self, failed)
+            except (management.ProviderError, ValueError, KeyError, TypeError) as exc:
+                self.result['errors'].append({'target': self.target, 'category': 'deletions', 'message': str(exc)})
         if mesh and repo.get('comments'):
             try:
                 mesh.comments()

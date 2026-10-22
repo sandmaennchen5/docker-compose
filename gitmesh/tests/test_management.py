@@ -44,6 +44,37 @@ class VaultAccountTests(unittest.TestCase):
                     self.assertIn(expected, str(raised.exception))
                 self.assertTrue(error.fp.closed)
 
+    def test_gitlab_budget_is_shared_across_controls_and_tokens(self):
+        provider = {'kind': 'gitlab', 'url': 'https://gitlab.com', 'token': 'one'}
+        other = management.Control(self.data)
+        with patch.object(management.time, 'time', return_value=100), patch.object(management.time, 'sleep') as sleep:
+            self.store.api_budget(provider)
+            other.api_budget({**provider, 'token': 'two'})
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 0.9)
+
+    def test_429_cooldown_survives_restart_without_repeating_write(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from unittest.mock import MagicMock
+        provider = {'kind': 'gitlab', 'url': 'https://gitlab.com', 'token': 'private'}
+        opener = MagicMock()
+        error = HTTPError('https://gitlab.com/test', 429, 'limit', {'Retry-After': '3600'}, BytesIO(b'private'))
+        opener.open.side_effect = error
+        with patch.object(management, 'build_opener', return_value=opener):
+            with self.assertRaises(management.RateLimited):
+                self.store.api(provider, '/test', method='POST', body={'title': 'example'})
+            with self.assertRaises(management.RateLimited):
+                management.Control(self.data).api(provider, '/test', method='POST', body={'title': 'example'})
+        self.assertEqual(opener.open.call_count, 1)
+        self.assertTrue(error.fp.closed)
+
+    def test_retry_after_supports_http_date_and_invalid_values(self):
+        with patch.object(management.time, 'time', return_value=0):
+            self.assertEqual(self.store.api_retry_after({'Retry-After': 'Thu, 01 Jan 1970 00:02:00 GMT'}), 120)
+        for value in ('invalid', 'nan', 'inf'):
+            self.assertEqual(self.store.api_retry_after({'Retry-After': value}), 60)
+
     def provider(self, **changes):
         body = {'id': 'forge', 'name': 'Forgejo', 'kind': 'forgejo', 'url': 'https://forge.example',
                 'username': 'alice', 'token': 'very-private-api-token'}

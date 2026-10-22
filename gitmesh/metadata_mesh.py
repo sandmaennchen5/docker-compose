@@ -5,6 +5,7 @@ import re
 from urllib.parse import quote
 import management
 import authorship
+import reconciliation
 import conflicts as conflict_store
 
 
@@ -68,7 +69,7 @@ class MetadataMesh:
             payload = {'kind': 'mesh', 'category': category, 'mesh': self.key, 'origin': origin, 'versions': versions,
                        'collections': {n: collections[n] for n in members},
                        'bindings': {n: conflict_store.binding(self.peers[n]['provider'], self.peers[n]['root'], self.peers[n]['identity']) for n in members}}
-            detail.update(resolution_id=conflict_store.remember(self.store, self.repo, payload), choices=list(members),
+            detail.update(resolution_id=conflict_store.remember(self.store, self.repo, payload), choices=list(members) + ['ignore'],
                           reason='Unterschiedliche Aenderungen desselben Eintrags. Eine Remote-Version auswaehlen oder auf den Providern angleichen.',
                           name=next(iter(values.values())).get('title', 'Kommentar'), values={n: {k: v[:1000] if isinstance(v, str) else v for k, v in fields.items()} for n, fields in values.items()})
         if category.startswith('comments:') and self.ticket_context:
@@ -105,7 +106,7 @@ class MetadataMesh:
                         reason='Kommentar-Loeschung bereits entschieden; weiterer Abgleich bleibt gesperrt')
             return
         origin_remote = origin.split(':', 1)[0]
-        versions = {n: {'id': str(row['id']), 'fields': {'body': row.get('body') or ''},
+        versions = {n: {'id': str(row['id']), 'identifier': str(self.identifier(category, n, row)), 'fields': reconciliation.clean(row, 'comments' if category.startswith('comments:') else category),
                         'copy': n != origin_remote, 'url': row.get('html_url') or row.get('web_url') or ''}
                     for n, row in members.items()}
         remote = next((n for n, key in self.peer_keys.items() if key == removed['remote']), None)
@@ -113,19 +114,21 @@ class MetadataMesh:
             self.record(self.source, category, 'skipped', origin, reason='Geloeschter Kommentar bleibt gesperrt; betroffenes Remote nicht verfuegbar')
             return
         payload = {'kind': 'comment_deletion', 'mesh': self.key, 'category': category, 'origin': origin,
-                   'name': self.ticket_context or 'Kommentar', 'removed': {'remote': remote, 'id': str(removed['item'])},
+                   'name': self.ticket_context or next(iter(members.values())).get('title', 'Kommentar'), 'removed': {'remote': remote, 'id': str(removed['item'])},
                    'versions': versions, 'collections': collections,
                    'bindings': {n: conflict_store.binding(self.peers[n]['provider'], self.peers[n]['root'], self.peers[n]['identity']) for n in collections}}
         identifier = conflict_store.remember(self.store, self.repo, payload)
-        values = {n: {'body': version['fields']['body'][:2000], 'status': 'Kopie' if version['copy'] else 'Original (wird nicht geloescht)',
+        values = {n: {**{k: v[:2000] if isinstance(v, str) else v for k,v in version['fields'].items()}, 'status': 'Kopie' if version['copy'] else 'Original (wird nicht geloescht)',
                       'url': version['url']} for n, version in versions.items()}
         values.setdefault(remote, {'status': 'Geloescht', 'body': ''})
-        self.record(remote, category, 'conflict', origin, name=self.ticket_context or 'Geloeschter Kommentar',
-                    kind='comment_deletion', resolution_id=identifier, choices=['delete_copies', 'keep_copies'], values=values,
-                    reason='Kommentar auf ' + remote + ' geloescht. Vorhandene Kopien vergleichen und Loeschung bestaetigen oder Kopien behalten. Bis dahin kein weiterer Abgleich dieses Kommentars.')
+        self.record(remote, category, 'conflict', origin, name=payload['name'],
+                    kind='comment_deletion', resolution_id=identifier, choices=['restore', 'delete_copies', 'keep_copies'], values=values,
+                    reason='Eintrag auf ' + remote + ' geloescht. Vorhandene Kopien vergleichen und Loeschung bestaetigen oder Kopien behalten. Bis dahin kein weiterer Abgleich dieses Kommentars.')
 
     def comment_removed(self, category, origin, members, collections, owners):
-        if not category.startswith('comments:'):
+        if getattr(self, '_allow_restore', False):
+            return False
+        if not category.startswith('comments:') and category != 'milestones':
             return False
         with self.store.db() as db:
             removed = db.execute('SELECT remote,item FROM comment_tombstones WHERE mesh=? AND category=? AND origin=?',
@@ -138,7 +141,7 @@ class MetadataMesh:
         for (remote, identifier), owner in owners.items():
             if owner != origin or remote not in collections or remote in members:
                 continue
-            endpoint = collections[remote] if self.peers[remote]['provider']['kind'] == 'gitlab' else '/issues/comments'
+            endpoint = collections[remote] if self.peers[remote]['provider']['kind'] == 'gitlab' or category == 'milestones' else '/issues/comments'
             try:
                 self.api(remote, endpoint + '/' + quote(str(identifier), safe=''))
             except management.ProviderError as exc:
@@ -188,7 +191,20 @@ class MetadataMesh:
             else:
                 blocked_remotes.add(remote)
                 self.conflict(category, remote + ':' + identifier)
+        all_collections = collections
         for origin, members in groups.items():
+            collections = dict(all_collections)
+            if self.source in members:
+                source_id = str(members[self.source]['id'])
+                hold_key = ('comments:' + category.removeprefix('comments:') + ':' + source_id) if category.startswith('comments:') else category + ':' + source_id
+                ignored = [n for n in collections if n != self.source and reconciliation.held(self.store, self.scope(n), hold_key)]
+                if ignored:
+                    members = dict(members)
+                    for n in ignored:
+                        collections.pop(n, None); members.pop(n, None)
+            if reconciliation.held(self.store, self.key, category + ':' + origin):
+                self.record(self.source, category, 'skipped', origin, reason='Eintrag durch Entscheidung ignoriert')
+                continue
             if self.comment_removed(category, origin, members, collections, owners):
                 continue
             origin_remote = origin.split(':', 1)[0]
@@ -264,6 +280,7 @@ class MetadataMesh:
                 except (management.ProviderError, KeyError, ValueError, TypeError) as exc:
                     complete = False
                     self.e.result['errors'].append({'target': remote, 'category': category.split(':')[0], 'item': origin, 'name': desired.get('title', self.ticket_context or 'Kommentar'), 'message': str(exc) if isinstance(exc, management.ProviderError) else 'Ungueltige Metadaten-Antwort'})
+            groups[origin].update(members)
             if complete:
                 for remote, identifier in committed:
                     self.save(category, origin, remote, identifier, desired)
@@ -304,6 +321,10 @@ class MetadataMesh:
                     if remote == self.source:
                         number = self.e.number(ticket, kind)
                     else:
+                        if (remote, 'pull_requests' if pull else 'issues', str(ticket['id'])) in getattr(self.e, '_blocked_tickets', set()):
+                            continue
+                        if reconciliation.held(self.store, self.scope(remote), ('pull_requests' if pull else 'issues') + ':' + str(ticket['id'])):
+                            continue
                         number = self.linked(remote, 'pull_requests' if pull else 'issues', ticket['id'])
                         if not number:
                             continue
