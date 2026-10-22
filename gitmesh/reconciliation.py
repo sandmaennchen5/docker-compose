@@ -645,6 +645,25 @@ def removed_releases(engine, repo, seen):
             result.append(item)
     return result
 
+def git_repository_ids(store, repo, remotes):
+    identities = {}
+    for remote in remotes:
+        provider_id = repo.get('remote_providers', {}).get(remote)
+        if not provider_id:
+            continue
+        try:
+            provider = store.provider(provider_id, reveal=True)
+            endpoint = store.repository_endpoint(provider, repo['remotes'][remote])
+            result = store.api(provider, endpoint)
+            identifier = result.get('id')
+            if isinstance(identifier, (str, int)) and not isinstance(identifier, bool):
+                identities[remote] = [provider_id, provider['kind'], provider['url'], str(identifier)]
+        except (management.ProviderError, ValueError, KeyError, TypeError, AttributeError):
+            # Without a verified identity change retain the conservative deletion check.
+            continue
+    return identities
+
+
 def review_git_deletions(store, repo, snapshots, tools, dry_run=False):
     import fnmatch
     schema(store)
@@ -654,6 +673,15 @@ def review_git_deletions(store, repo, snapshots, tools, dry_run=False):
     if not previous or not isinstance(previous['snapshot'], str):
         return [], set()
     old = json.loads(previous['snapshot'])
+    candidates = [remote for remote, refs in old.items() if remote in snapshots and set(refs)-set(snapshots[remote])]
+    identities = git_repository_ids(store, repo, candidates)
+    with store.db() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS git_repository_ids (scope TEXT PRIMARY KEY, identities TEXT)')
+        row = db.execute('SELECT identities FROM git_repository_ids WHERE scope=?', (git_scope(repo),)).fetchone()
+    previous_ids = json.loads(row['identities']) if row and isinstance(row['identities'], str) else {}
+    for remote, identity in identities.items():
+        if remote in previous_ids and previous_ids[remote] != identity:
+            old.pop(remote, None)
     removed = {}
     for remote, refs in old.items():
         if remote not in snapshots:
@@ -681,7 +709,13 @@ def review_git_deletions(store, repo, snapshots, tools, dry_run=False):
 
 
 def remember_git(store, repo, snapshots, blocked):
+    identities = git_repository_ids(store, repo, snapshots)
     with store.db() as db:
+        db.execute('CREATE TABLE IF NOT EXISTS git_repository_ids (scope TEXT PRIMARY KEY, identities TEXT)')
+        row = db.execute('SELECT identities FROM git_repository_ids WHERE scope=?', (git_scope(repo),)).fetchone()
+        old_ids = json.loads(row['identities']) if row and isinstance(row['identities'], str) else {}
+        old_ids.update(identities)
+        db.execute('INSERT OR REPLACE INTO git_repository_ids VALUES (?,?)', (git_scope(repo), json.dumps(old_ids)))
         db.execute('CREATE TABLE IF NOT EXISTS git_observations (scope TEXT PRIMARY KEY,snapshot TEXT)')
         previous = db.execute('SELECT snapshot FROM git_observations WHERE scope=?',(git_scope(repo),)).fetchone()
         old = json.loads(previous['snapshot']) if previous and isinstance(previous['snapshot'], str) else {}

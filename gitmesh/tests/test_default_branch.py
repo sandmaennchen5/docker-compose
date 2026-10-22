@@ -112,6 +112,17 @@ class DefaultBranchIntegrationTests(SyncFixture):
         self.assertEqual(self.command(target, 'symbolic-ref', 'HEAD').stdout.strip(), 'refs/heads/main')
         self.assertEqual(details['default_branch']['items'][0]['branch'], 'main')
 
+    def test_same_repository_id_with_removed_refs_still_requires_review(self):
+        self.setup_forgejo()
+        self.assertEqual(mesh.synchronize(self.repo)[0], 'success')
+        target = self.root / 'forgejo'
+        for ref in self.command(target, 'for-each-ref', '--format=%(refname)').stdout.splitlines():
+            self.command(target, 'update-ref', '-d', ref)
+        status, details = mesh.synchronize(self.repo)
+        self.assertEqual(status, 'conflict')
+        self.assertTrue(details['git_reviews'])
+        self.assertEqual(self.command(target, 'show-ref', check=False).stdout, '')
+
     def test_new_target_with_server_initialized_beta_still_uses_source_main(self):
         self.setup_forgejo()
         self.command(self.work, 'push', self.remotes['forgejo'], 'beta')
