@@ -47,7 +47,9 @@ if is_enabled "${ENABLE_HAWSER:-true}"; then
   env PORT="${HAWSER_PORT:-2376}" TOKEN="$HAWSER_TOKEN_VALUE" \
       STACKS_DIR="${HAWSER_STACKS_DIR:-/data/hawser/stacks}" \
       DOCKER_SOCKET="${HAWSER_DOCKER_SOCKET:-/var/run/docker.sock}" \
-      SERVER_URL="${HAWSER_SERVER_URL:-}" \
+      DOCKHAND_SERVER_URL="${HAWSER_SERVER_URL:-}" \
+      REQUEST_TIMEOUT="${HAWSER_REQUEST_TIMEOUT:-30}" \
+      COMPOSE_TIMEOUT="${HAWSER_COMPOSE_TIMEOUT:-900}" \
       TLS_CERT="${HAWSER_TLS_CERT:-}" TLS_KEY="${HAWSER_TLS_KEY:-}" \
       /usr/local/bin/hawser &
   PIDS="$PIDS $!"
