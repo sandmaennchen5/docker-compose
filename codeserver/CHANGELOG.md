@@ -1,5 +1,42 @@
 # Code-Server Changelog
 
+## 4.141.1 — 2026.10.24
+
+**Upstream:** `linuxserver/docker-code-server:4.141.1-ls372`
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.141.1-ls372/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.141.0-ls371...4.141.1-ls372
+
+**Remote Changes:**
+
+### Security
+
+- Update bundled Node.js to 24.22.1 to fix a remote code execution bug in the
+  Brotli decoder (CVE-2026-111497).
+- Reject compressed request bodies (`Content-Encoding: br`, `gzip`, or
+  `deflate`) instead of decompressing them.
+
+### Fixed
+
+- Boolean flags in the `--flag=false` form and in the config file now respect
+  being set to false.
+
+### Added
+
+- Turkish locale.
+
+### Changed
+
+- Expand values from path options in the config file that start with a tilde.
+
+
 ## 4.141.0 — 2026.10.09
 
 **Upstream:** `linuxserver/docker-code-server:4.141.0-ls369`
