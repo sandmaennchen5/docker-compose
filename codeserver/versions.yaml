@@ -1,13 +1,13 @@
 build:
-  date: "2026.10.24"
-  git_tag: "code-server_4.141.1"
+  date: "2026.10.25"
+  git_tag: "code-server_4.143.1"
   image: "ghcr.io/sandmaennchen5/docker-compose/codeserver"
-  image_tag: "4.141.1"
+  image_tag: "4.143.1"
 
 upstream:
   project: "linuxserver/docker-code-server"
   image: "lscr.io/linuxserver/code-server"
-  version: "4.141.1"
-  tag: "4.141.1-ls372"
-  ref: "lscr.io/linuxserver/code-server:4.141.1-ls372"
-  digest: "sha256:1104f2c6f24fbd35a14dcd525a8f3577d7d7373394cc0219544f0d9aff211f5b"
+  version: "4.143.1"
+  tag: "4.143.1-ls373"
+  ref: "lscr.io/linuxserver/code-server:4.143.1-ls373"
+  digest: "sha256:4524d0b00478e41264f42e0e660c1819e3b7d0c460f78ce73e44fa39b2b55134"
