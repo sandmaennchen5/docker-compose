@@ -479,6 +479,25 @@ async function main() {
     });
     await page.locator('[data-page=conflicts]').click();
     await page.locator('#page-conflicts').waitFor({state: 'visible'});
+    let decisionPayload = null;
+    await page.route('**/api/decisions/enqueue', async route => { decisionPayload = route.request().postDataJSON(); await route.fulfill({json:{status:'queued',ids:[77],message:'Entscheidungen gespeichert.'}}); });
+    await page.route('**/api/conflicts?page=*', route => route.fulfill({json:{items:[{profile:settings.repositories[0].name,resolution_id:'batch-review',category:'milestones',kind:'object_review',name:'Batch milestone',source:'source',target:'target',choices:['restore','ignore'],values:{source:{title:'Batch milestone',state:'closed'},target:{state:'open'}}}],holds:[],page:1,total:1,next_page:null}}));
+    await page.evaluate(()=>loadConflictCenter());
+    assert.ok((await page.locator('#problem-table').textContent()).includes('source'));
+    assert.ok((await page.locator('#problem-table').textContent()).includes('target'));
+    await page.locator('#problem-table select').selectOption('ignore');
+    await page.evaluate(()=>loadConflictCenter());
+    assert.equal(await page.locator('#problem-table select').inputValue(),'ignore','Selection survives polling');
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('#decision-submit').click();
+    await page.waitForFunction(()=>activeSave===null);
+    assert.equal(decisionPayload.items[0].action,'conflicts/resolve');
+    assert.equal(decisionPayload.items[0].body.choice,'ignore');
+    assert.equal(decisionPayload.items[0].body.conflict_id,'batch-review');
+    await page.unroute('**/api/decisions/enqueue');
+    await page.unroute('**/api/conflicts?page=*');
+    await page.route('**/api/conflicts?page=*', route => route.fulfill({json:{items:[],holds:[],page:1,total:0,next_page:null}}));
+
     const auditFixture = {id:'audit-test',profile:settings.repositories[0].name,started:1,updated:2,done:false,processed:0,pending:1,results:[],summary:{},errors:[]};
     await page.route('**/api/mappings/start', route => route.fulfill({json:auditFixture}));
     await page.route('**/api/mappings/step', route => route.fulfill({json:{...auditFixture,done:true,processed:1,pending:0,summary:{ok:0,conflict:1,not_checked:0},results:[{status:'conflict',category:'milestones',remote:'target',name:'4.1.1',reason:'Kopiermarkierung ohne gespeicherte Zuordnung',values:{source:{name:'4.1.1',id:'15',key:'5',state:'open'},target:null}}]}}));

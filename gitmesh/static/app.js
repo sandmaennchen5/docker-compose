@@ -1,4 +1,5 @@
 'use strict';
+let conflictTableRows = [];
 let token = '', actor = null, providers = [], configuration = null, latest = null, discovered = [], discoveryNext = null;
 const openedJobDetails = new Set(), openedMappings = new Set(), openedConflictValues = new Set();
 let activeSave = null, saveNoticeTimer = null, authorshipLoadSequence = 0;
@@ -103,7 +104,7 @@ function clearSession() {
   clearTimeout(saveNoticeTimer); el('save-progress').hidden = true;
   openedJobDetails.clear(); openedMappings.clear(); openedConflictValues.clear();
   el('conflict-list').replaceChildren(); el('conflict-other').replaceChildren(); el('conflict-comparison').replaceChildren(); el('conflict-inventory-list').replaceChildren();
-  mappingPaused = true; mappingReport = null; mappingPair = null; mappingBatchRemaining = []; mappingBatchReports = []; el('pair-confirm').disabled = true; el('pair-values').textContent = ''; el('mapping-results').replaceChildren(); el('mapping-progress').textContent = '';
+  mappingPaused = true; mappingReport = null; mappingPair = null; decisionSelections.clear(); el('problem-table').replaceChildren(); el('mapping-table').replaceChildren(); el('decision-list').replaceChildren(); mappingBatchRemaining = []; mappingBatchReports = []; el('pair-confirm').disabled = true; el('pair-values').textContent = ''; el('mapping-results').replaceChildren(); el('mapping-progress').textContent = '';
   toolComparison = null; el('tool-output').replaceChildren(); el('tool-inventory').replaceChildren(); el('tool-comparison').replaceChildren();
   token = ''; actor = null; providers = []; configuration = null; latest = null; discovered = []; discoveryNext = null;
   for (const id of ['user-form', 'login', 'bootstrap', 'transport-form', 'authorship-form', 'shared-form', 'group-form']) el(id).reset();
@@ -466,7 +467,7 @@ function conflictPanel(job, scope) {
   if (metadata.truncated) root.append(node('p', 'Die Einzelliste ist gekuerzt. Gesamtzaehler und Rohprotokoll beachten.'));
   if (job.status === 'error' && !errors.length) root.append(node('p', data.message || data.git_error || 'Operation fehlgeschlagen. Details im Rohprotokoll.'));
   if ((metadata.warnings || []).length) root.append(node('p', 'Hinweise: ' + metadata.warnings.join(' · ')));
-  if (admin() && entries.some(item => item.resolution_id)) root.append(node('small', 'Aufloesen ist moeglich, sobald kein Sync laeuft. Bei Bedarf Worker pausieren und laufende Jobs abschliessen lassen. Anzeige zuruecksetzen quittiert nur das alte Protokoll.'));
+  if (admin() && entries.some(item => item.resolution_id)) root.append(node('small', 'Tabellarische Entscheidungen koennen auch waehrend eines Scans gespeichert werden; der Worker fuehrt sie nach Freigabe aus. Anzeige zuruecksetzen quittiert nur das alte Protokoll.'));
   if (admin()) root.append(button('Erneut synchronisieren', async () => { await request('/api/sync', 'POST', {profile: job.profile}); message('Neue Pruefung eingereiht.'); await refresh(); }));
   return root;
 }
@@ -619,6 +620,10 @@ function conflictRequest() {
 }
 async function loadConflictCenter(page = 1, append = false) {
   const result = await request('/api/conflicts?page=' + page);
+  if (!append) conflictTableRows = [];
+  conflictTableRows.push(...result.items);
+  problemTable(conflictTableRows.filter(item=>!el('conflict-filter').value || JSON.stringify(item).toLowerCase().includes(el('conflict-filter').value.toLowerCase())),el('problem-table'),'conflict');
+  if (!append && admin()) await loadDecisions();
   if (!append) el('conflict-list').replaceChildren();
   const filter = el('conflict-filter').value.toLowerCase();
   for (const item of result.items) {
@@ -933,6 +938,7 @@ function renderMappingReport() {
   el('mapping-pause').disabled = !mappingBusy;
   el('mapping-download').disabled = false;
   const filter = el('mapping-filter').value;
+  problemTable(report.results.map((item,index)=>({...item,profile:report.profile,_index:index})).filter(item=>!filter || item.status===filter).slice(0,mappingShown),el('mapping-table'),'audit');
   let shown = 0;
   for (const [index, row] of report.results.entries()) {
     if (filter && row.status !== filter) continue;
@@ -955,8 +961,8 @@ function renderMappingReport() {
     }));
     if (row.scope && row.item && row.target_key) for (const [action, text] of [['ignore', 'Ignorieren'], ['unlink', 'Verknuepfung loesen und sperren']]) card.append(button(text, () => runSave(null, async () => {
       if (!confirm(text + '? Keine Remote-Objekte werden geloescht. Der automatische Abgleich dieses Eintrags wird gesperrt.')) return;
-      const result = await request('/api/mappings/repair', 'POST', {profile:report.profile,audit_id:report.id,index,action}); message(result.message);
-      row.status = 'ignored'; row.reason = result.message; renderMappingReport();
+      const result = await request('/api/decisions/enqueue', 'POST', {items:[{action:'mappings/repair',body:{profile:report.profile,audit_id:report.id,index,action}}]}); message(result.message);
+      row.reason = result.message; renderMappingReport();
     })));
     root.append(card);
   }
@@ -1013,7 +1019,7 @@ saveForm('mapping-pair', async () => {
 });
 el('pair-confirm').addEventListener('click', () => runSave(null,async () => {
   if (!mappingPair || !confirm('Diese beiden Objekte verknuepfen? Keine Remote-Inhalte werden jetzt veraendert. Unterschiede vor dem naechsten Sync pruefen.')) return;
-  const result=await request('/api/mappings/pair-apply','POST',mappingPair); mappingPair=null; el('pair-confirm').disabled=true; message(result.message);
+  const result=await request('/api/decisions/enqueue','POST',{items:[{action:'mappings/pair-apply',body:mappingPair}]}); mappingPair=null; el('pair-confirm').disabled=true; message(result.message);
 }).catch(showError));
 
 el('mapping-all').addEventListener('click', () => runSave(null,async () => {
@@ -1024,3 +1030,66 @@ el('mapping-all').addEventListener('click', () => runSave(null,async () => {
   mappingBatchRemaining=profiles.slice(1);
   mappingReport=await request('/api/mappings/start','POST',{profile:profiles[0]}); renderMappingReport(); void continueMappingAudit();
 }).catch(showError));
+
+const decisionSelections = new Map();
+function decisionLabel(choice, item) {
+  if (item?.kind === 'mesh' && choice !== 'ignore') return 'Version von ' + choice + ' auf die verknuepften Plattformen uebernehmen';
+  return ({ignore:'Ignorieren und sperren',unlink:'Verknuepfung loesen und sperren',restore:'Fehlende Kopie wiederherstellen',delete:'Zielkopie loeschen',delete_copies:'Verbleibende Kopien loeschen',keep_copies:'Kopien behalten und sperren',close:'Am Ziel schliessen',merge:'Am Ziel zusammenfuehren',apply_source:'Quelle auf Ziel uebernehmen',source:'Quellwerte uebernehmen',adopt:'Vorhandene Kopie zuordnen',resume:'Sperre aufheben'})[choice] || 'Version von ' + choice + ' uebernehmen';
+}
+function problemTable(rows, root, mode) {
+  const table=node('table','','problem-table'), head=node('thead'), header=node('tr');
+  for (const title of ['Profil / Typ / Problem','Quelle / Original','Ziel / Kopie','Loesung']) header.append(node('th',title));
+  head.append(header); table.append(head); const body=node('tbody');
+  for (const item of rows) {
+    const tr=node('tr'), info=node('td'), source=node('td'), target=node('td'), actions=node('td');
+    info.append(node('strong',(item.profile || mappingReport?.profile || '')+' · '+item.category),node('p',item.name || item.item || item.key || 'Zuordnung'),node('small',item.reason || ''));
+    const configured=latest?.repositories.find(r=>r.name===(item.profile || mappingReport?.profile));
+    const from=item.source || (mode==='conflict' || item.source_id ? configured?.source : null), to=item.target || item.remote;
+    const values=item.values || {};
+    source.append(node('strong',from || 'Ursprung unklar'));
+    source.append(node('pre',JSON.stringify(values[from] ?? (item.source_id ? {ID:item.source_id} : 'Nicht eindeutig zugeordnet'),null,2)));
+    if (to) { target.append(node('strong',to),node('pre',JSON.stringify(values[to] ?? {Kennung:item.target_key || item.key || '',Status:item.status},null,2))); }
+    else for (const [remote,value] of Object.entries(values)) if (remote!==from) target.append(node('strong',remote),node('pre',JSON.stringify(value,null,2)));
+    const key=mode==='conflict' ? 'conflict:'+item.resolution_id : 'audit:'+mappingReport.id+':'+item._index;
+    const choices=mode==='conflict' ? item.choices || [] : item.scope && item.item && item.target_key ? ['ignore','unlink'] : [];
+    if (admin() && choices.length) {
+      const select=document.createElement('select'); select.setAttribute('aria-label','Loesung fuer '+(item.name || item.item || 'Problem'));
+      select.append(new Option('Noch keine Entscheidung',''));
+      for (const choice of choices) select.append(new Option(decisionLabel(choice,item),choice));
+      select.value=decisionSelections.get(key)?.choice || '';
+      select.addEventListener('change',()=>{
+        if (!select.value) { decisionSelections.delete(key); return; }
+        const payload=mode==='conflict' ? {profile:item.profile,conflict_id:item.resolution_id,choice:select.value} : {profile:mappingReport.profile,audit_id:mappingReport.id,index:item._index,action:select.value};
+        decisionSelections.set(key,{choice:select.value,label:(item.profile || mappingReport.profile)+' · '+(item.name || item.item || item.key || '')+' → '+decisionLabel(select.value,item),action:mode==='conflict' ? 'conflicts/resolve' : 'mappings/repair',body:payload});
+      }); actions.append(select);
+    } else {
+      actions.append(node('p','Zuerst Zuordnung / Vergleich pruefen.'));
+      if (admin() && mode==='audit' && item.key) actions.append(button('Zuordnung auswaehlen',()=>{
+        el('pair-category').value=item.category; el('pair-target').value=to || ''; el('pair-target-key').value=item.key; el('pair-target-ticket').value=item.ticket || '';
+        const details=el('mapping-pair').closest('details'); details.open=true; details.scrollIntoView({behavior:'smooth'});
+      }));
+    }
+    tr.append(info,source,target,actions); body.append(tr);
+  }
+  table.append(body); root.replaceChildren(table);
+}
+async function loadDecisions() {
+  if (!admin()) return;
+  const result=await request('/api/decisions'); const root=el('decision-list'); root.replaceChildren();
+  const labels={queued:'Wartet auf Freigabe',running:'Wird ausgefuehrt',success:'Erfolgreich',needs_review:'Erneut vergleichen',error:'Fehler – Stand pruefen',cancelled:'Abgebrochen'};
+  for (const item of result.items) {
+    const row=node('div','','decision-status'); row.append(node('strong','#'+item.id+' · '+item.profile+' · '+(labels[item.status] || item.status)),node('p',item.selection),node('p',item.details?.message || ''));
+    if (item.status==='queued') row.append(button('Auftrag abbrechen',async()=>{await request('/api/decisions/cancel','POST',{id:item.id}); await loadDecisions();}));
+    root.append(row);
+  }
+  if (!result.items.length) root.append(node('p','Keine gespeicherten Loesungsauftraege.'));
+}
+el('decision-submit').addEventListener('click',()=>runSave(null,async()=>{
+  const selected=[...decisionSelections.values()];
+  if (!selected.length) throw new Error('Zuerst Loesungen in den Tabellen waehlen.');
+  const deletion = selected.some(x=>['delete','delete_copies'].includes(x.body.choice));
+  if (!confirm('Diese Entscheidungen speichern und sobald moeglich ausfuehren?' + (deletion ? ' Loeschungen koennen nicht rueckgaengig gemacht werden.' : '') + '\n\n'+selected.map(x=>x.label).join('\n'))) return;
+  const result=await request('/api/decisions/enqueue','POST',{items:selected.map(x=>({action:x.action,body:x.body}))});
+  decisionSelections.clear(); message(result.message); await loadConflictCenter(); await loadDecisions(); if(mappingReport) renderMappingReport();
+}).catch(showError));
+el('decision-clear').addEventListener('click',()=>{decisionSelections.clear(); loadConflictCenter().catch(showError); if(mappingReport) renderMappingReport();});

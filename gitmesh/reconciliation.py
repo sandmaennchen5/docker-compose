@@ -432,7 +432,7 @@ def catalog(store, page=1):
         choices = payload.get('choices') or (['restore', 'delete_copies', 'keep_copies'] if payload['kind'] == 'comment_deletion' else ['adopt', 'source', 'ignore'] if payload['kind'] == 'label' else list(values) + ['ignore'])
         items.append({'profile': row['profile'], 'resolution_id': row['id'], 'category': payload.get('category', 'labels'), 'status': 'conflict',
                       'kind': payload['kind'], 'item': payload.get('item', payload.get('origin', '')), 'name': payload.get('name') or payload.get('fields', {}).get('name') or payload.get('item') or 'Metadaten',
-                      'target': payload.get('target'), 'choices': choices, 'values': values, 'reason': 'Gespeicherter Vergleich; vor der Aktion werden die aktuellen Werte erneut geprueft.'})
+                      'source': payload.get('source') or next((n for n,v in payload.get('versions',{}).items() if not v.get('copy',True)), None), 'target': payload.get('target'), 'choices': choices, 'values': values, 'reason': 'Gespeicherter Vergleich; vor der Aktion werden die aktuellen Werte erneut geprueft.'})
     schema(store)
     with store.db() as db:
         holds = [dict(r) for r in db.execute('SELECT scope,item,action FROM object_holds ORDER BY rowid DESC LIMIT 200')]

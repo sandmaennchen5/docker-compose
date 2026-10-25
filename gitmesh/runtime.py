@@ -131,12 +131,27 @@ def supervisor(mesh):
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     children = {}
     with file_lock(store.data, 'worker-instance'):
+        import decisions
+        decisions.recover(store)
         try:
             while not stop.is_set():
                 for identifier, (child, group) in list(children.items()):
                     if child.poll() is not None:
                         children.pop(identifier)
                 notice, groups = '', {}
+                if not children and decisions.pending(store) and store.mode() != 'stopped':
+                    heartbeat_stop = threading.Event()
+                    def decision_heartbeat():
+                        while not heartbeat_stop.wait(3):
+                            publish(store, {}, 'Gespeicherte Loesung wird ausgefuehrt')
+                    heartbeat_thread = threading.Thread(target=decision_heartbeat, daemon=True)
+                    heartbeat_thread.start()
+                    try:
+                        decisions.run_one(mesh)
+                    finally:
+                        heartbeat_stop.set()
+                        heartbeat_thread.join(timeout=5)
+                waiting_decisions = decisions.pending(store)
                 try:
                     with file_lock(store.data, exclusive=False):
                         recover(store, children)
@@ -150,7 +165,7 @@ def supervisor(mesh):
                             settings = limits(config, group)
                             mode = store.group_mode(group)
                             groups[group] = {'mode': mode, 'parallelism': settings.get('parallelism', 2), 'active': sum(g == group for _, g in children.values())}
-                            if store.mode() != 'running' or mode != 'running':
+                            if waiting_decisions or store.mode() != 'running' or mode != 'running':
                                 continue
                             if any(metrics[key] is not None and metrics[key] < settings.get(setting, default) for key, setting, default in [('disk_free_mb', 'min_free_mb', 128), ('memory_available_mb', 'min_memory_mb', 0)]) or settings.get('max_load', 0) and metrics['load'] is not None and metrics['load'] > settings['max_load']:
                                 groups[group]['notice'] = 'Ressourcenlimit erreicht'

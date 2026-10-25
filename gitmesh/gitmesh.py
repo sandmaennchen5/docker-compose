@@ -27,6 +27,7 @@ import authorship
 import conflicts as conflict_store
 import reconciliation
 import mapping_audit
+import decisions
 import sys
 
 DATA = Path(os.environ.get('GITMESH_DATA', '/data'))
@@ -692,6 +693,9 @@ class Handler(BaseHTTPRequestHandler):
         actor = self.actor()
         if not actor:
             return self.reply(401, {'error': 'Authentication required'})
+        if path == '/api/decisions':
+            if actor['role'] != 'admin': return self.reply(403, {'error':'Administratorrechte erforderlich'})
+            return self.reply(200, decisions.listing(control()))
         if path == '/api/me':
             return self.reply(200, actor)
         if path == '/api/settings':
@@ -773,6 +777,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if actor['role'] != 'admin':
             return self.reply(403, {'error': 'Lesebenutzer dürfen keine Änderungen vornehmen'})
+        if self.path == '/api/decisions/enqueue':
+            return self.reply(200, decisions.enqueue(store, load_config(), body, actor))
+        if self.path == '/api/decisions/cancel':
+            return self.reply(200, decisions.cancel(store, body.get('id')))
         if self.path in ('/api/refs/change', '/api/merge', '/api/webhooks/register', '/api/conflicts/resolve', '/api/conflicts/compare', '/api/conflicts/inventory', '/api/conflicts/resume', '/api/mappings/start', '/api/mappings/step', '/api/mappings/report', '/api/mappings/repair', '/api/mappings/pair-preview', '/api/mappings/pair-apply'):
             return self.reply(200, repository_action(self.path[5:], body, actor))
         if self.path == '/api/settings':
