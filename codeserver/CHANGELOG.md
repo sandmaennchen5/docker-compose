@@ -29,6 +29,31 @@ Code v1.143.1
 
 **Upstream:** `linuxserver/docker-code-server:4.143.1-ls373`
 
+**UI Maker:** v0.28.4 (coolshrimp/WinForm-GUI-Maker)
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.143.1-ls373/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.141.1-ls372...4.143.1-ls373
+
+**Remote Changes:**
+
+Code v1.143.1
+
+### Changed
+
+- Update to Code 1.143.1
+
+
+## 4.143.1 — 2026.10.25
+
+**Upstream:** `linuxserver/docker-code-server:4.143.1-ls373`
+
 ### Upstream Changelog
 
 **CI Report:**
