@@ -30,6 +30,36 @@ Wenn ein Update erkannt wird, baut die Action:
 ### 🧩 Persistente Extensions
 Alle Extensions werden in `/config/extensions.txt` definiert und bei jedem Start aktualisiert.
 
+Die Standardliste liegt im Image unter `/defaults/extensions.txt` und wird beim ersten
+Start nach `/config/extensions.txt` kopiert. Installation und laufender Server verwenden
+dieselben Verzeichnisse: `/config/extensions` und `/config/data`.
+
+### Deutsche Oberfläche und GitHub-Anmeldung
+
+Das deutsche Sprachpaket wird bei jedem Start installiert. Die Voreinstellung
+`locale: de` wird in der code-server-Konfiguration ergänzt, sofern dort noch keine
+Sprache gesetzt ist. Nach dem Image-Update den Browser neu laden. Eine explizite
+Sprachauswahl im Browser gegebenenfalls über „Configure Display Language“ auf Deutsch setzen.
+
+Für Einstellungen und Anmeldedaten muss **das gesamte `/config`** persistent sein,
+beispielsweise im bestehenden Compose-/Portainer-Service:
+
+```yaml
+volumes:
+  - /pfad/auf/dem/host/code-server:/config
+```
+
+Ein Volume nur für den Workspace oder die Extensions genügt nicht. Beim Umstellen
+vorhandene `/config`-Daten sichern und übernehmen; ein leeres Volume enthält die
+bisherige Anmeldung nicht. Anschließend einmal bei GitHub anmelden und einen
+Container-Neustart sowie eine Neuerstellung mit demselben Volume prüfen.
+
+Bleibt die erneute Anmeldung trotz persistentem `/config` erforderlich, muss die
+konkrete Anmeldung (z. B. Copilot oder GitHub-Erweiterung) untersucht werden. Auch
+Browserdaten und eine gleichbleibende Zugriffs-URL können dabei relevant sein.
+Die tatsächlich verwendete Server-/Portainer-Konfiguration liegt diesem Verzeichnis
+nicht bei; die Ursache für den Sitzungsverlust ist deshalb noch nicht bestätigt.
+
 ### 🛠️ DevContainer & Docker Support
 Das Image enthält:
 
