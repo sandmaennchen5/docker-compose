@@ -50,5 +50,11 @@ fi
 code-server --user-data-dir /config/data --extensions-dir /config/extensions \
   --install-extension MS-CEINTL.vscode-language-pack-de || true
 
+echo "--- Installing bundled UI Maker $(cat /defaults/ui-maker-version.txt) ---"
+if ! code-server --user-data-dir /config/data --extensions-dir /config/extensions \
+  --install-extension /defaults/ui-maker.vsix --force; then
+  echo "WARNING: UI Maker installation failed; retrying on the next container start." >&2
+fi
+
 echo "--- Handing over to LinuxServer init ---"
 exec /init

@@ -21,6 +21,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       upstream_tag: ${{ steps.check.outputs.upstream_tag }}
       repo_tag: ${{ steps.check.outputs.repo_tag }}
+      ui_maker_tag: ${{ steps.check.outputs.ui_maker_tag }}
 
     steps:
       - name: Checkout
@@ -40,6 +41,13 @@ jobs:
             exit 1
           fi
 
+          UI_MAKER_TAG="$(curl -fsSL --retry 3 'https://api.github.com/repos/coolshrimp/WinForm-GUI-Maker/releases/latest' | jq -er '.tag_name')"
+          if [[ ! "${UI_MAKER_TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid UI Maker release tag"
+            exit 1
+          fi
+          echo "ui_maker_tag=${UI_MAKER_TAG}" >> "${GITHUB_OUTPUT}"
+
           VERSION="${UPSTREAM_TAG%%-ls*}"
           REPO_TAG="code-server_${VERSION}"
 
@@ -51,7 +59,7 @@ jobs:
           echo "upstream_tag=${UPSTREAM_TAG}" >> "${GITHUB_OUTPUT}"
           echo "repo_tag=${REPO_TAG}" >> "${GITHUB_OUTPUT}"
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "push" ]]; then
             echo "changed=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
@@ -77,7 +85,10 @@ jobs:
 
           echo "Last build: ${LAST}"
 
-          if [[ "${VERSION}" != "${LAST}" ]]; then
+          LAST_UI_MAKER="$(awk -F': ' '/^ui_maker:/ { found=1; next } found && /^  tag:/ { gsub(/"/, "", $2); print $2; exit }' codeserver/versions.yaml 2>/dev/null || true)"
+          LAST_UPSTREAM_TAG="$(awk -F': ' '/^upstream:/ { found=1; next } found && /^  tag:/ { gsub(/"/, "", $2); print $2; exit }' codeserver/versions.yaml 2>/dev/null || true)"
+
+          if [[ "${VERSION}" != "${LAST}" || "${UPSTREAM_TAG}" != "${LAST_UPSTREAM_TAG}" || "${UI_MAKER_TAG}" != "${LAST_UI_MAKER}" ]]; then
             echo "changed=true" >> "${GITHUB_OUTPUT}"
           else
             echo "changed=false" >> "${GITHUB_OUTPUT}"
@@ -134,6 +145,7 @@ jobs:
           push: true
           pull: true
           build-args: |
+            UI_MAKER_TAG=${{ needs.check-upstream.outputs.ui_maker_tag }}
             CODE_SERVER_BASE=lscr.io/linuxserver/code-server:${{ needs.check-upstream.outputs.upstream_tag }}@${{ steps.upstream.outputs.digest }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -146,6 +158,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.check-upstream.outputs.version }}
+          UI_MAKER_TAG: ${{ needs.check-upstream.outputs.ui_maker_tag }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
           REPO_TAG: ${{ needs.check-upstream.outputs.repo_tag }}
           UPSTREAM_DIGEST: ${{ steps.upstream.outputs.digest }}
@@ -169,12 +182,17 @@ jobs:
             tag: "${UPSTREAM_TAG}"
             ref: "lscr.io/linuxserver/code-server:${UPSTREAM_TAG}"
             digest: "${UPSTREAM_DIGEST}"
+
+          ui_maker:
+            project: "coolshrimp/WinForm-GUI-Maker"
+            tag: "${UI_MAKER_TAG}"
           EOF
 
       - name: Update codeserver/CHANGELOG.md
         shell: bash
         env:
           VERSION: ${{ needs.check-upstream.outputs.version }}
+          UI_MAKER_TAG: ${{ needs.check-upstream.outputs.ui_maker_tag }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
         run: |
           set -euo pipefail
@@ -195,6 +213,8 @@ jobs:
             echo "## ${VERSION} — ${BUILD_DATE}"
             echo
             echo "**Upstream:** \`linuxserver/docker-code-server:${UPSTREAM_TAG}\`"
+            echo
+            echo "**UI Maker:** ${UI_MAKER_TAG} (coolshrimp/WinForm-GUI-Maker)"
             echo
             echo "### Upstream Changelog"
             echo

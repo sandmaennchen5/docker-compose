@@ -10,3 +10,5 @@ ms-vscode.vscode-typescript-next
 redhat.vscode-yaml
 github.copilot
 mubashardev.gitignore-helper
+openai.chatgpt
+feiskyer.chatgpt-copilot
