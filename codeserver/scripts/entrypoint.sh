@@ -41,17 +41,17 @@ if [ -f "$EXT_FILE" ]; then
   while IFS= read -r ext || [ -n "$ext" ]; do
     if [ -n "$ext" ]; then
       echo "Extension: $ext"
-      code-server --user-data-dir /config/data --extensions-dir /config/extensions --install-extension "$ext" || true
+      /app/code-server/bin/code-server --user-data-dir /config/data --extensions-dir /config/extensions --install-extension "$ext" || true
     fi
   done < "$EXT_FILE"
 fi
 
 # Install the language pack even when an existing volume has its own extension list.
-code-server --user-data-dir /config/data --extensions-dir /config/extensions \
+/app/code-server/bin/code-server --user-data-dir /config/data --extensions-dir /config/extensions \
   --install-extension MS-CEINTL.vscode-language-pack-de || true
 
 echo "--- Installing bundled UI Maker $(cat /defaults/ui-maker-version.txt) ---"
-if ! code-server --user-data-dir /config/data --extensions-dir /config/extensions \
+if ! /app/code-server/bin/code-server --user-data-dir /config/data --extensions-dir /config/extensions \
   --install-extension /defaults/ui-maker.vsix --force; then
   echo "WARNING: UI Maker installation failed; retrying on the next container start." >&2
 fi
