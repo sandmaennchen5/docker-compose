@@ -32,12 +32,12 @@ jobs:
       packages: write
     steps:
       - name: Check out image recipe
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Check out upstream source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: DEC-LLC/git-advanced-multisync
           ref: ${{ inputs.upstream_ref || 'main' }}
