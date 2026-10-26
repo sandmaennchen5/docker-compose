@@ -1,10 +1,10 @@
 "build":
-  "date": "2026.10.25"
+  "date": "2026.10.26"
   "git_tag": ""
-  "git_revision": "115d8108bf4f19d80da5ecba46e313a271a71b0e"
+  "git_revision": "976e5523e66f2be95793b05ab3576653f1016beb"
   "image": "ghcr.io/sandmaennchen5/gitmesh"
-  "image_tag": "sha-115d8108bf4f19d80da5ecba46e313a271a71b0e"
-  "image_digest": "sha256:46b4f148f55332b0850c0f5bd9f06e7ec4ad3fbc078a1b6a1b1999891e10859e"
+  "image_tag": "sha-976e5523e66f2be95793b05ab3576653f1016beb"
+  "image_digest": "sha256:0a2793be4693103ebc31b0d08994b05c2ac8601551c5d3377e48d630369048da"
   "platforms": ["linux/amd64", "linux/arm64"]
 "base":
   "image": "python:3.13-slim"
@@ -26,7 +26,7 @@
       "cryptography": "50.0.2"
       "cffi": "2.1.1"
       "pycparser": "3.12"
-    "image_digest": "sha256:f901a5255b2810950e946d5e7dcfb2d9bbb637bda59eb45ce20bdbd514b7d5bb"
+    "image_digest": "sha256:36c4127e51d7b8f84ade65f13de46698c17e8e7cc5e4ee586da97807ed3d51e0"
   "linux/arm64":
     "python": "3.13.17"
     "git": "2.47.3"
@@ -44,4 +44,4 @@
       "cryptography": "50.0.2"
       "cffi": "2.1.1"
       "pycparser": "3.12"
-    "image_digest": "sha256:f981026d97f6ee361564434c5a20710495ec84958c430a69ef62e3cc14232cab"
+    "image_digest": "sha256:282a7cdc309bc733f4af3d9f59ca7d69dff3346c36b26e4e3f800d3627bcac10"
