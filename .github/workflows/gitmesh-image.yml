@@ -145,7 +145,7 @@ jobs:
           python gitmesh/version_report.py --image "$IMAGE" --digest "$DIGEST" --revision "$REVISION" --ref "$REF_NAME"
           cat gitmesh/versions.yaml
       - name: Upload version report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gitmesh-versions-${{ github.run_id }}
           path: gitmesh/versions.yaml
