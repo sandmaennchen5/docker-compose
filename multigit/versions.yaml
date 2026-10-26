@@ -1,11 +1,11 @@
 "build":
-  "date": "2026.10.21"
-  "measured_at": "2026-10-21T14:44:58.690234+00:00"
+  "date": "2026.10.26"
+  "measured_at": "2026-10-26T16:56:18.036213+00:00"
   "git_tag": ""
-  "git_revision": "daca51aed5923ddf19392ebc809a064e98ce8a9d"
+  "git_revision": "9ef16545f80a511edc5e44e0b22038760f90cac5"
   "image": "ghcr.io/sandmaennchen5/multigit"
-  "image_tag": "sha-daca51aed5923ddf19392ebc809a064e98ce8a9d"
-  "image_digest": "sha256:c0cbc239559482a16d37bf1db973346a3d4bc540cb46d6aa0fd8db53abf1b9fd"
+  "image_tag": "sha-9ef16545f80a511edc5e44e0b22038760f90cac5"
+  "image_digest": "sha256:37db29d9ef11f70d3b7c86e6a278a817021cb042e8b011dd1cee5a6665a8ad61"
   "platforms": ["linux/amd64", "linux/arm64"]
 "base":
   "image": "debian:bookworm-slim"
@@ -290,8 +290,8 @@
       "xkb-data": "2.35.1-1"
       "zlib1g:amd64": "1:1.2.13.dfsg-1"
     "python_packages": {}
-    "image_digest": "sha256:c589299a91f564a89108ebcdbd3081b22e3faa8edb614b1f0b68f6accee8d0f6"
-    "image_built_at": "2026-10-21T14:42:50.790104776Z"
+    "image_digest": "sha256:4c84b7080c24f5bd8da446465d7993827fcd088635fd9123a05401f5d202c84a"
+    "image_built_at": "2026-10-26T16:55:08.889311657Z"
   "linux/arm64":
     "architecture": "arm64"
     "os": "Debian GNU/Linux 12 (bookworm)"
@@ -571,5 +571,5 @@
       "xkb-data": "2.35.1-1"
       "zlib1g:arm64": "1:1.2.13.dfsg-1"
     "python_packages": {}
-    "image_digest": "sha256:baa8c665007f9057a9f4174ac157530e47eaab3cebd4a21db7e43c93fe229046"
-    "image_built_at": "2026-10-21T14:43:48.330318021Z"
+    "image_digest": "sha256:e6c41bbdc92d99143f0f688b7a47d0f2df6e43991b88e9ec7a1d2769060cffca"
+    "image_built_at": "2026-10-26T16:49:34.894422189Z"
