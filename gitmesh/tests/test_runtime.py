@@ -129,6 +129,23 @@ class ProcessTests(unittest.TestCase):
             time.sleep(0.1)
         self.fail('Process condition timed out')
 
+    def test_worker_survives_temporary_pending_database_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            config=root/'config.json'
+            config.write_text(json.dumps({'interval':300,'worker':{'min_free_mb':0},'repositories':[]}))
+            fixture=root/'contention_fixture.py'
+            fixture.write_text("import sys,sqlite3\nfrom pathlib import Path\nsys.path.insert(0,"+repr(str(Path(mesh.__file__).parent))+")\nimport gitmesh as mesh, runtime, decisions\noriginal=decisions.pending\ncalls=0\ndef pending(store):\n global calls\n calls+=1\n if calls==1: raise sqlite3.OperationalError('database is locked')\n if calls>=3: (mesh.DATA/'recovered').write_text('ok')\n return original(store)\ndecisions.pending=pending\nruntime.supervisor(mesh)\n")
+            env=dict(os.environ,GITMESH_DATA=str(root),GITMESH_CONFIG=str(config),GITMESH_ADMIN_TOKEN='a'*32,PYTHONDONTWRITEBYTECODE='1')
+            worker=subprocess.Popen([sys.executable,str(fixture)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,**({'creationflags':subprocess.CREATE_NO_WINDOW} if os.name=='nt' else {}))
+            try:
+                self.wait_for(lambda:(root/'recovered').exists())
+                self.assertIsNone(worker.poll(),'Temporary SQLite lock must not exit the supervisor')
+                store=management.Control(root)
+                self.wait_for(lambda:runtime.status(store)['online'])
+            finally:
+                worker.terminate(); worker.wait(timeout=10)
+
     def test_web_restart_keeps_worker_job_and_queue(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -69,57 +69,63 @@ class Control:
         self.data.mkdir(parents=True, exist_ok=True)
         db = sqlite3.connect(self.data / 'history.db', timeout=30)
         db.row_factory = sqlite3.Row
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS providers (
-              id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
-              url TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
-              token TEXT NOT NULL DEFAULT '', health TEXT NOT NULL DEFAULT 'untested',
-              checked REAL);
-            CREATE TABLE IF NOT EXISTS release_assets (
-              profile TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL, tag TEXT NOT NULL,
-              name TEXT NOT NULL, signature TEXT NOT NULL, target_id TEXT NOT NULL, digest TEXT NOT NULL,
-              repository TEXT NOT NULL, PRIMARY KEY(profile,source,target,tag,name));
-            CREATE TABLE IF NOT EXISTS provider_http (id TEXT PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS provider_transport (id TEXT PRIMARY KEY, details TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat REAL, details TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS worker_groups (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS users (
-              name TEXT PRIMARY KEY, role TEXT NOT NULL, password TEXT NOT NULL,
-              enabled INTEGER NOT NULL DEFAULT 1);
-            CREATE TABLE IF NOT EXISTS sessions (
-              hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS login_failures (
-              address TEXT PRIMARY KEY, count INTEGER NOT NULL, since REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS jobs (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, origin TEXT NOT NULL,
-              status TEXT NOT NULL, requested REAL NOT NULL, started REAL,
-              finished REAL, attempts INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL DEFAULT '{}');
-            CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(profile)
-              WHERE status IN ('queued','running');
-            CREATE TABLE IF NOT EXISTS initial_defaults (
-              profile TEXT NOT NULL, remote TEXT NOT NULL, scope TEXT NOT NULL,
-              provider TEXT NOT NULL, url TEXT NOT NULL, repository_id INTEGER NOT NULL,
-              branch TEXT NOT NULL, PRIMARY KEY(profile,remote));
-            CREATE TABLE IF NOT EXISTS job_resets (
-              job_id INTEGER PRIMARY KEY, reset_at REAL NOT NULL, reset_by TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS schedules (
-              profile TEXT PRIMARY KEY, signature TEXT NOT NULL, next_run REAL NOT NULL);
-            CREATE TABLE IF NOT EXISTS worker_state (id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL);
-            INSERT OR IGNORE INTO worker_state VALUES(1,'running');
-        """)
         try:
-            # Old databases used reusable row IDs. Keep IDs stable after log deletion.
-            schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
-            if 'AUTOINCREMENT' not in schema.upper():
-                with db:
-                    db.execute('BEGIN IMMEDIATE')
-                    schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
-                    if 'AUTOINCREMENT' not in schema.upper():
-                        db.execute('ALTER TABLE jobs RENAME TO jobs_before_log_actions')
-                        db.execute(schema.replace('id INTEGER PRIMARY KEY,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1))
-                        db.execute('INSERT INTO jobs SELECT * FROM jobs_before_log_actions')
-                        db.execute('DROP TABLE jobs_before_log_actions')
-                        db.execute("CREATE UNIQUE INDEX one_live_job ON jobs(profile) WHERE status IN ('queued','running')")
+            required = {'providers','release_assets','provider_http','provider_transport','runtime_state','worker_groups','users','sessions','login_failures','jobs','initial_defaults','job_resets','schedules','worker_state'}
+            definitions = {r['name']: r['sql'] for r in db.execute("SELECT name,sql FROM sqlite_master WHERE type='table'")}
+            ready = required.issubset(definitions) and 'AUTOINCREMENT' in definitions['jobs'].upper()
+            if ready:
+                ready = db.execute('SELECT 1 FROM worker_state WHERE id=1').fetchone() is not None
+            if not ready:
+                db.executescript("""
+                    CREATE TABLE IF NOT EXISTS providers (
+                      id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+                      url TEXT NOT NULL, username TEXT NOT NULL DEFAULT '',
+                      token TEXT NOT NULL DEFAULT '', health TEXT NOT NULL DEFAULT 'untested',
+                      checked REAL);
+                    CREATE TABLE IF NOT EXISTS release_assets (
+                      profile TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL, tag TEXT NOT NULL,
+                      name TEXT NOT NULL, signature TEXT NOT NULL, target_id TEXT NOT NULL, digest TEXT NOT NULL,
+                      repository TEXT NOT NULL, PRIMARY KEY(profile,source,target,tag,name));
+                    CREATE TABLE IF NOT EXISTS provider_http (id TEXT PRIMARY KEY);
+                    CREATE TABLE IF NOT EXISTS provider_transport (id TEXT PRIMARY KEY, details TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat REAL, details TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS worker_groups (name TEXT PRIMARY KEY, mode TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS users (
+                      name TEXT PRIMARY KEY, role TEXT NOT NULL, password TEXT NOT NULL,
+                      enabled INTEGER NOT NULL DEFAULT 1);
+                    CREATE TABLE IF NOT EXISTS sessions (
+                      hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS login_failures (
+                      address TEXT PRIMARY KEY, count INTEGER NOT NULL, since REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS jobs (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT, profile TEXT NOT NULL, origin TEXT NOT NULL,
+                      status TEXT NOT NULL, requested REAL NOT NULL, started REAL,
+                      finished REAL, attempts INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL DEFAULT '{}');
+                    CREATE UNIQUE INDEX IF NOT EXISTS one_live_job ON jobs(profile)
+                      WHERE status IN ('queued','running');
+                    CREATE TABLE IF NOT EXISTS initial_defaults (
+                      profile TEXT NOT NULL, remote TEXT NOT NULL, scope TEXT NOT NULL,
+                      provider TEXT NOT NULL, url TEXT NOT NULL, repository_id INTEGER NOT NULL,
+                      branch TEXT NOT NULL, PRIMARY KEY(profile,remote));
+                    CREATE TABLE IF NOT EXISTS job_resets (
+                      job_id INTEGER PRIMARY KEY, reset_at REAL NOT NULL, reset_by TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS schedules (
+                      profile TEXT PRIMARY KEY, signature TEXT NOT NULL, next_run REAL NOT NULL);
+                    CREATE TABLE IF NOT EXISTS worker_state (id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL);
+                    INSERT OR IGNORE INTO worker_state VALUES(1,'running');
+                """)
+                # Old databases used reusable row IDs. Keep IDs stable after log deletion.
+                schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
+                if 'AUTOINCREMENT' not in schema.upper():
+                    with db:
+                        db.execute('BEGIN IMMEDIATE')
+                        schema = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()[0]
+                        if 'AUTOINCREMENT' not in schema.upper():
+                            db.execute('ALTER TABLE jobs RENAME TO jobs_before_log_actions')
+                            db.execute(schema.replace('id INTEGER PRIMARY KEY,', 'id INTEGER PRIMARY KEY AUTOINCREMENT,', 1))
+                            db.execute('INSERT INTO jobs SELECT * FROM jobs_before_log_actions')
+                            db.execute('DROP TABLE jobs_before_log_actions')
+                            db.execute("CREATE UNIQUE INDEX one_live_job ON jobs(profile) WHERE status IN ('queued','running')")
             with db:
                 yield db
         finally:

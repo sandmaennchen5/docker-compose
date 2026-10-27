@@ -223,6 +223,16 @@ class ReleaseSync:
         scope = provider['url'].rstrip('/') + root + '/releases/' + str(destination.get('id') or destination.get('tag_name', release['tag_name']))
         if row and row['repository'] != scope:
             row = None
+        if row is None and existing is not None:
+            # Remote aliases are UI names, not repository or asset identities.
+            # Recover only an exact previous source signature + destination binding.
+            with self.store.db() as db:
+                previous = db.execute('SELECT * FROM release_assets WHERE profile=? AND tag=? AND name=? AND repository=? AND target_id=? AND signature=?',
+                                      (repo['name'], release['tag_name'], name, scope, str(existing['id']), signature)).fetchall()
+                if previous and len({r['digest'] for r in previous}) == 1 and len(previous[0]['digest']) == 64:
+                    known = previous[0]
+                    db.execute('INSERT OR REPLACE INTO release_assets VALUES(?,?,?,?,?,?,?,?,?)', (*key, signature, known['target_id'], known['digest'], scope))
+                    row = db.execute('SELECT * FROM release_assets WHERE profile=? AND source=? AND target=? AND tag=? AND name=?', key).fetchone()
         if row and not existing and getattr(self, '_review_assets', False):
             import reconciliation
             item = reconciliation.prepare(self.store, repo, {'category':'assets','target':target,'source_key':str(asset['id']),'target_key':row['target_id'],'tag':release['tag_name']})
@@ -303,6 +313,7 @@ class ReleaseSync:
                             result['assets'].append({'remote': remote, 'tag': tag, 'name': asset.get('name'), 'status': status})
                             if status == 'conflict':
                                 review = reconciliation.prepare(self.store, repo, {'category':'assets','target':remote,'source_key':str(asset['id']),'target_key':str(target_assets[asset['name']]['id']),'tag':tag})
+                                review['reason'] = 'Vorhandener Release-Anhang hat keine eindeutig passende gespeicherte Dateizuordnung. Das bedeutet nicht, dass der Dateiinhalt geaendert wurde. Name und Groesse allein reichen fuer eine automatische Uebernahme nicht aus.'
                                 result['review_items'].append(review)
                                 result['assets'][-1]['resolution_id'] = review['resolution_id']
                         except (management.ProviderError, ValueError, KeyError, TypeError, AttributeError) as exc:

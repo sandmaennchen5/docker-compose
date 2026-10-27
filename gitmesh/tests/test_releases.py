@@ -66,6 +66,25 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 mesh.validate_config({'repositories': [dict(self.repo, **changes)]})
 
+    def test_remote_alias_rename_recovers_only_exact_known_asset_binding(self):
+        source, target = self.store.provider('source', True), self.store.provider('target', True)
+        asset = {'id':123,'name':'app.zip','size':3,'updated_at':'2026-10-22T00:00:00Z'}
+        destination = {'id':9,'tag_name':'v1.0'}
+        previous = {'id':8,'name':'app.zip','size':3}
+        def download(provider,url,path,*args,**kwargs):
+            Path(path).write_bytes(b'abc'); return hashlib.sha256(b'abc').hexdigest()
+        with patch.object(releases,'stream_download',side_effect=download), patch.object(self.engine,'send_asset',return_value=previous):
+            self.assertEqual(self.engine.copy_asset(self.repo,source,'/repos/team/repo',self.release,asset,'target',target,'/repos/team/repo',destination,None),'created')
+        renamed = dict(self.repo,source='GitHub')
+        with patch.object(releases,'stream_download') as download, patch.object(self.engine,'send_asset') as send:
+            self.assertEqual(self.engine.copy_asset(renamed,source,'/repos/team/repo',self.release,asset,'Forgejo',target,'/repos/team/repo',destination,previous),'unchanged')
+            download.assert_not_called(); send.assert_not_called()
+            for change in ({'id':999}, {'updated_at':'2026-10-25T00:00:00Z'}):
+                self.assertEqual(self.engine.copy_asset(dict(self.repo,source='new-source'),source,'/repos/team/repo',self.release,dict(asset,**change),'new-target',target,'/repos/team/repo',destination,previous),'conflict')
+            self.assertEqual(self.engine.copy_asset(dict(self.repo,source='another-source'),source,'/repos/team/repo',self.release,asset,'another-target',target,'/repos/other/repo',destination,previous),'conflict')
+            self.assertEqual(self.engine.copy_asset(dict(self.repo,source='another-source'),source,'/repos/team/repo',self.release,asset,'another-target',target,'/repos/team/repo',destination,dict(previous,id=999)),'conflict')
+            download.assert_not_called(); send.assert_not_called()
+
     def test_existing_unmanaged_asset_is_never_deleted(self):
         source, target = self.store.provider('source', True), self.store.provider('target', True)
         with patch.object(releases, 'stream_download') as download, patch.object(self.engine, 'send_asset') as send:
@@ -216,6 +235,13 @@ class LocalReleaseApiTests(unittest.TestCase):
             self.assertEqual(next(iter(state['assets'].values()))['data'], state['binary'])
             self.assertEqual(engine.sync(repo, snapshots)['assets'][0]['status'], 'unchanged')
             self.assertEqual(state['uploads'], 1)
+            renamed = dict(repo, source='origin', remotes={'origin':repo['remotes']['source'],'mirror':repo['remotes']['target']}, remote_providers={'origin':'source','mirror':'target'})
+            renamed_refs = {'origin':snapshots['source'],'mirror':snapshots['target']}
+            renamed_result = engine.sync(renamed, renamed_refs)
+            self.assertEqual(renamed_result['errors'], [], renamed_result)
+            self.assertEqual(renamed_result['assets'][0]['status'], 'unchanged')
+            self.assertEqual(renamed_result['conflicts'], 0)
+            self.assertEqual(state['uploads'], 1, 'Renaming aliases must not upload or replace existing identical mapped files')
             state['binary'] = b'updated binary'; state['version'] = 2
             result = engine.sync(repo, snapshots)
             self.assertEqual(result['errors'], [])

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -52,10 +53,22 @@ def limits(config, group):
     return dict(config.get('worker', {}), **config.get('worker_sets', {}).get(group, {}))
 
 
+def database_busy(exc):
+    code = getattr(exc, 'sqlite_errorcode', 0) & 255
+    return code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or 'locked' in str(exc).lower() or 'busy' in str(exc).lower()
+
+
 def publish(store, active, notice='', group_modes=None):
-    with store.db() as db:
-        db.execute("INSERT OR REPLACE INTO runtime_state VALUES(1,?,?)", (time.time(), json.dumps({
-            'active': active, 'notice': notice, 'groups': group_modes or {}})))
+    try:
+        with store.db() as db:
+            db.execute("INSERT OR REPLACE INTO runtime_state VALUES(1,?,?)", (time.time(), json.dumps({
+                'active': active, 'notice': notice, 'groups': group_modes or {}})))
+        return True
+    except sqlite3.OperationalError as exc:
+        if not database_busy(exc):
+            raise
+        # A missed heartbeat must not kill the supervisor or interrupt child draining.
+        return False
 
 
 def status(store):
@@ -132,27 +145,30 @@ def supervisor(mesh):
     children = {}
     with file_lock(store.data, 'worker-instance'):
         import decisions
-        decisions.recover(store)
+        recover_decisions = True
         try:
             while not stop.is_set():
                 for identifier, (child, group) in list(children.items()):
                     if child.poll() is not None:
                         children.pop(identifier)
                 notice, groups = '', {}
-                if not children and decisions.pending(store) and store.mode() != 'stopped':
-                    heartbeat_stop = threading.Event()
-                    def decision_heartbeat():
-                        while not heartbeat_stop.wait(3):
-                            publish(store, {}, 'Gespeicherte Loesung wird ausgefuehrt')
-                    heartbeat_thread = threading.Thread(target=decision_heartbeat, daemon=True)
-                    heartbeat_thread.start()
-                    try:
-                        decisions.run_one(mesh)
-                    finally:
-                        heartbeat_stop.set()
-                        heartbeat_thread.join(timeout=5)
-                waiting_decisions = decisions.pending(store)
                 try:
+                    if recover_decisions:
+                        decisions.recover(store)
+                        recover_decisions = False
+                    if not children and decisions.pending(store) and store.mode() != 'stopped':
+                        heartbeat_stop = threading.Event()
+                        def decision_heartbeat():
+                            while not heartbeat_stop.wait(3):
+                                publish(store, {}, 'Gespeicherte Loesung wird ausgefuehrt')
+                        heartbeat_thread = threading.Thread(target=decision_heartbeat, daemon=True)
+                        heartbeat_thread.start()
+                        try:
+                            decisions.run_one(mesh)
+                        finally:
+                            heartbeat_stop.set()
+                            heartbeat_thread.join(timeout=5)
+                    waiting_decisions = decisions.pending(store)
                     with file_lock(store.data, exclusive=False):
                         recover(store, children)
                         config = mesh.load_config()
@@ -193,6 +209,11 @@ def supervisor(mesh):
                             for row in db.execute("SELECT id,profile FROM jobs WHERE status='queued'").fetchall():
                                 if row['profile'] not in valid:
                                     db.execute("UPDATE jobs SET status='cancelled',finished=? WHERE id=?", (time.time(), row['id']))
+                except sqlite3.OperationalError as exc:
+                    if not database_busy(exc):
+                        raise
+                    recover_decisions = True
+                    notice = 'Datenbank belegt; Worker wartet und versucht es erneut'
                 except Busy:
                     notice = 'Manuelle Repository-Operation laeuft'
                 except Exception:
