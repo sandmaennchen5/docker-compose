@@ -1,8 +1,8 @@
 build:
-  date: "2026.10.26"
-  git_tag: "univeral-agent_2026.10.26"
+  date: "2026.10.29"
+  git_tag: "univeral-agent_2026.10.29"
   image: "ghcr.io/sandmaennchen5/docker-compose/universal-agent"
-  image_tag: "2026.10.26"
+  image_tag: "2026.10.29"
   platforms:
     - "linux/amd64"
     - "linux/arm64"
@@ -10,13 +10,13 @@ build:
 agents:
   portainer:
     source_ref: "portainer/agent:sts"
-    version: "2.45.3"
-    version_ref: "portainer/agent:2.45.3"
-    version_matches_digest: true
-    index_digest: "sha256:6e6d2d5d8967da5b4d45eab32b7268af170395395d753d3f34ecb4d6ca5bd388"
+    version: "unknown"
+    version_ref: ""
+    version_matches_digest: false
+    index_digest: "sha256:cd22e4f904ff0e957a1421d1e9e9b8ca0523ed6b5f79f4d12b2ed0809ef3d734"
     platforms:
-      linux/amd64: "sha256:8a6f5bc0bc57aed4911971e61d8d5863c5157f62a482efbf0409954fa0c597ad"
-      linux/arm64: "sha256:06cae51b13391a71a612f7c2a5ca478d207fbd8d7bec80bb85252370899f9927"
+      linux/amd64: "sha256:ad2e0324f6cbd72bdc8c845a3629db830bf902dd5baf8431a7ff4bce6fa26dee"
+      linux/arm64: "sha256:857d16ce0a733842bf351cc51cb4ac4d612a05116a72ee476da5fbf0c4f6e402"
 
   hawser:
     source_ref: "ghcr.io/finsys/hawser:latest"
@@ -30,10 +30,10 @@ agents:
 
   portwing:
     source_ref: "ghcr.io/codeswhat/portwing:latest"
-    version: "0.9.26"
-    version_ref: "ghcr.io/codeswhat/portwing:0.9.26"
+    version: "1.0.0"
+    version_ref: "ghcr.io/codeswhat/portwing:1.0.0"
     version_matches_digest: true
-    index_digest: "sha256:eb623b5848d10bfbd59c58b954f50d48928e9082b015460743018a9df4249e5e"
+    index_digest: "sha256:965ea00379f88a72957e037430c3a6f30c3d90a72e779e18ed32a4feda4ee2ec"
     platforms:
-      linux/amd64: "sha256:5f32a060f6efa108b578a2aa98f8fbb5f33db0ae2af7afc3c1923f4a5b1fc8fd"
-      linux/arm64: "sha256:9c20ec175ba40fa00ddb3256b61c978d2416d5081a53d32559959cbc73632d58"
+      linux/amd64: "sha256:ba2fb745019e7fe8752f3101619471f869c4fda0cd38c807fa589970c1993a09"
+      linux/arm64: "sha256:f3e407d43ec5964469ec23e9d784c2435b868b3f703e1a69e5e05e8d9a024e90"
