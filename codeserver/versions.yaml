@@ -1,16 +1,16 @@
 build:
-  date: "2026.10.25"
-  git_tag: "code-server_4.143.1"
+  date: "2026.10.30"
+  git_tag: "code-server_4.144.0"
   image: "ghcr.io/sandmaennchen5/docker-compose/codeserver"
-  image_tag: "4.143.1"
+  image_tag: "4.144.0"
 
 upstream:
   project: "linuxserver/docker-code-server"
   image: "lscr.io/linuxserver/code-server"
-  version: "4.143.1"
-  tag: "4.143.1-ls373"
-  ref: "lscr.io/linuxserver/code-server:4.143.1-ls373"
-  digest: "sha256:4524d0b00478e41264f42e0e660c1819e3b7d0c460f78ce73e44fa39b2b55134"
+  version: "4.144.0"
+  tag: "4.144.0-ls374"
+  ref: "lscr.io/linuxserver/code-server:4.144.0-ls374"
+  digest: "sha256:ec8f01d91c93a5d615224a306914c3ea9190c6237f876383591bca676a24fa67"
 
 ui_maker:
   project: "coolshrimp/WinForm-GUI-Maker"

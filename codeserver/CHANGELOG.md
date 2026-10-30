@@ -1,5 +1,44 @@
 # Code-Server Changelog
 
+## 4.144.0 — 2026.10.30
+
+**Upstream:** `linuxserver/docker-code-server:4.144.0-ls374`
+
+**UI Maker:** v0.28.4 (coolshrimp/WinForm-GUI-Maker)
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.144.0-ls374/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.143.1-ls373...4.144.0-ls374
+
+**Remote Changes:**
+
+Code v1.144.0
+
+### Changed
+
+- Update to Code 1.144.0
+
+### Fixed
+
+- `--socket-fd` now works: the inherited socket is passed on to the process
+  that listens, and the address is logged as `fd:<n>`. Previously code-server
+  failed with `listen EEXIST` or `Server has no address`.
+- The cookie domain was not being set against the shared root host of proxy
+  domains when proxy domains contained template variables like `{{port}}`,
+  resulting in having to sign in multiple times per domain instead of only once
+  as originally intended.
+- When doing the web socket origin check, if the host does not already contain a
+  port, fall back to `X-Forwarded-Port`.
+- Fix default ports not matching in the web socket origin check (for example
+  `https://coder.com` will now match `https://coder.com:443`).
+
+
 ## 4.143.1 — 2026.10.25
 
 **Upstream:** `linuxserver/docker-code-server:4.143.1-ls373`
