@@ -29,6 +29,7 @@ env:
   PORTAINER_IMAGE: portainer/agent:sts
   HAWSER_IMAGE: ghcr.io/finsys/hawser:latest
   PORTWING_IMAGE: ghcr.io/codeswhat/portwing:latest
+  DRYDOCK_IMAGE: codeswhat/drydock:latest
 
 jobs:
   check:
@@ -53,6 +54,9 @@ jobs:
       portwing_index_digest: ${{ steps.upstream.outputs.portwing_index_digest }}
       portwing_amd64_digest: ${{ steps.upstream.outputs.portwing_amd64_digest }}
       portwing_arm64_digest: ${{ steps.upstream.outputs.portwing_arm64_digest }}
+      drydock_index_digest: ${{ steps.upstream.outputs.drydock_index_digest }}
+      drydock_amd64_digest: ${{ steps.upstream.outputs.drydock_amd64_digest }}
+      drydock_arm64_digest: ${{ steps.upstream.outputs.drydock_arm64_digest }}
 
       portainer_version: ${{ steps.versions.outputs.portainer_version }}
       portainer_version_ref: ${{ steps.versions.outputs.portainer_version_ref }}
@@ -149,6 +153,7 @@ jobs:
           resolve_one portainer "${PORTAINER_IMAGE}"
           resolve_one hawser "${HAWSER_IMAGE}"
           resolve_one portwing "${PORTWING_IMAGE}"
+          resolve_one drydock "${DRYDOCK_IMAGE}"
 
       - name: Resolve SemVer and verify platform digests
         id: versions
@@ -308,6 +313,8 @@ jobs:
 
           echo "portwing_amd64_digest=$(label io.sandmaennchen.universal-agent.portwing-amd64-digest)" >> "$GITHUB_OUTPUT"
           echo "portwing_arm64_digest=$(label io.sandmaennchen.universal-agent.portwing-arm64-digest)" >> "$GITHUB_OUTPUT"
+          echo "drydock_amd64_digest=$(label io.sandmaennchen.universal-agent.drydock-amd64-digest)" >> "$GITHUB_OUTPUT"
+          echo "drydock_arm64_digest=$(label io.sandmaennchen.universal-agent.drydock-arm64-digest)" >> "$GITHUB_OUTPUT"
 
       - name: Decide whether to build
         id: decide
@@ -316,6 +323,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
           CURRENT_EXISTS: ${{ steps.current.outputs.exists }}
+          NEW_DRYDOCK_AMD64: ${{ steps.upstream.outputs.drydock_amd64_digest }}
+          NEW_DRYDOCK_ARM64: ${{ steps.upstream.outputs.drydock_arm64_digest }}
+          OLD_DRYDOCK_AMD64: ${{ steps.current.outputs.drydock_amd64_digest }}
+          OLD_DRYDOCK_ARM64: ${{ steps.current.outputs.drydock_arm64_digest }}
 
           NEW_PORTAINER_AMD64: ${{ steps.upstream.outputs.portainer_amd64_digest }}
           NEW_PORTAINER_ARM64: ${{ steps.upstream.outputs.portainer_arm64_digest }}
@@ -340,6 +351,8 @@ jobs:
 
           if [[ "${EVENT_NAME}" == "schedule" ]]; then
             if [[ "${CURRENT_EXISTS}" != "true" ]] ||
+               [[ "${NEW_DRYDOCK_AMD64}" != "${OLD_DRYDOCK_AMD64}" ]] ||
+               [[ "${NEW_DRYDOCK_ARM64}" != "${OLD_DRYDOCK_ARM64}" ]] ||
                [[ "${NEW_PORTAINER_AMD64}" != "${OLD_PORTAINER_AMD64}" ]] ||
                [[ "${NEW_PORTAINER_ARM64}" != "${OLD_PORTAINER_ARM64}" ]] ||
                [[ "${NEW_HAWSER_AMD64}" != "${OLD_HAWSER_AMD64}" ]] ||
@@ -402,6 +415,10 @@ jobs:
             PORTAINER_IMAGE=${{ env.PORTAINER_IMAGE }}@${{ needs.check.outputs.portainer_index_digest }}
             HAWSER_IMAGE=${{ env.HAWSER_IMAGE }}@${{ needs.check.outputs.hawser_index_digest }}
             PORTWING_IMAGE=${{ env.PORTWING_IMAGE }}@${{ needs.check.outputs.portwing_index_digest }}
+            DRYDOCK_IMAGE=${{ env.DRYDOCK_IMAGE }}@${{ needs.check.outputs.drydock_index_digest }}
+            DRYDOCK_DIGEST=${{ needs.check.outputs.drydock_index_digest }}
+            DRYDOCK_AMD64_DIGEST=${{ needs.check.outputs.drydock_amd64_digest }}
+            DRYDOCK_ARM64_DIGEST=${{ needs.check.outputs.drydock_arm64_digest }}
 
             PORTAINER_DIGEST=${{ needs.check.outputs.portainer_index_digest }}
             HAWSER_DIGEST=${{ needs.check.outputs.hawser_index_digest }}
@@ -430,6 +447,9 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: bash
         env:
+          DRYDOCK_INDEX: ${{ needs.check.outputs.drydock_index_digest }}
+          DRYDOCK_AMD64: ${{ needs.check.outputs.drydock_amd64_digest }}
+          DRYDOCK_ARM64: ${{ needs.check.outputs.drydock_arm64_digest }}
           BUILD_DATE: ${{ needs.check.outputs.build_date }}
           REPO_TAG: ${{ needs.check.outputs.repo_tag }}
 
@@ -465,6 +485,13 @@ jobs:
               - "linux/arm64"
 
           agents:
+            drydock:
+              source_ref: "${DRYDOCK_IMAGE}"
+              index_digest: "${DRYDOCK_INDEX}"
+              platforms:
+                linux/amd64: "${DRYDOCK_AMD64}"
+                linux/arm64: "${DRYDOCK_ARM64}"
+
             portainer:
               source_ref: "${PORTAINER_IMAGE}"
               version: "${PORTAINER_VERSION}"

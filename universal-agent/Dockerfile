@@ -3,16 +3,20 @@
 ARG PORTAINER_IMAGE=portainer/agent:sts
 ARG HAWSER_IMAGE=ghcr.io/finsys/hawser:latest
 ARG PORTWING_IMAGE=ghcr.io/codeswhat/portwing:latest
+ARG DRYDOCK_IMAGE=codeswhat/drydock:latest
 
 FROM ${PORTAINER_IMAGE} AS portainer
 FROM ${HAWSER_IMAGE} AS hawser
 FROM ${PORTWING_IMAGE} AS portwing
 
-FROM alpine:3.22
+FROM ${DRYDOCK_IMAGE}
 
 ARG PORTAINER_DIGEST=unknown
 ARG HAWSER_DIGEST=unknown
 ARG PORTWING_DIGEST=unknown
+ARG DRYDOCK_DIGEST=unknown
+ARG DRYDOCK_AMD64_DIGEST=unknown
+ARG DRYDOCK_ARM64_DIGEST=unknown
 ARG PORTAINER_VERSION=unknown
 ARG HAWSER_VERSION=unknown
 ARG PORTWING_VERSION=unknown
@@ -25,7 +29,10 @@ ARG PORTWING_AMD64_DIGEST=unknown
 ARG PORTWING_ARM64_DIGEST=unknown
 
 LABEL org.opencontainers.image.title="Universal Docker Agent" \
-      org.opencontainers.image.description="Portainer Agent + Dockhand Hawser + Drydock Portwing" \
+      io.sandmaennchen.universal-agent.drydock-digest="${DRYDOCK_DIGEST}" \
+      io.sandmaennchen.universal-agent.drydock-amd64-digest="${DRYDOCK_AMD64_DIGEST}" \
+      io.sandmaennchen.universal-agent.drydock-arm64-digest="${DRYDOCK_ARM64_DIGEST}" \
+      org.opencontainers.image.description="Portainer Agent + Dockhand Hawser + Drydock Agent / Portwing" \
       org.opencontainers.image.source="https://github.com/sandmaennchen5/docker-compose" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       io.sandmaennchen.universal-agent.portainer-version="${PORTAINER_VERSION}" \
@@ -53,9 +60,10 @@ COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/portainer-agent /usr/local/bin/hawser \
     /usr/local/bin/portwing /usr/local/bin/entrypoint.sh
 
-ENV ENABLE_PORTAINER=true \
-    ENABLE_HAWSER=true \
-    ENABLE_PORTWING=true \
+ENV ENABLE_PORTAINER=false \
+    ENABLE_HAWSER=false \
+    ENABLE_PORTWING=false \
+    ENABLE_DRYDOCK=false \
     HAWSER_PORT=2376 \
     PORTWING_PORT=3000 \
     HAWSER_STACKS_DIR=/data/hawser/stacks \
@@ -63,7 +71,10 @@ ENV ENABLE_PORTAINER=true \
 
 EXPOSE 9001 2376 3000
 
+ENV DD_SERVER_PORT=3000 DD_WATCHER_LOCAL_SOCKET=/var/run/docker.sock
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
   CMD /usr/local/bin/entrypoint.sh health || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD []

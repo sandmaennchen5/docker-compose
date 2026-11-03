@@ -1,5 +1,49 @@
 # Universal Docker Agent
 
+Alle vier Agents sind standardmäßig deaktiviert. Gewünschte Agents ausdrücklich
+mit `ENABLE_PORTAINER=true`, `ENABLE_HAWSER=true`, `ENABLE_PORTWING=true` oder
+`ENABLE_DRYDOCK=true` aktivieren. Ohne aktiven Agent beendet sich der Container
+mit `No agents enabled.`.
+
+## Drydock-Agent statt Portwing
+
+Für den nativen [Drydock-Agent](https://getdrydock.com/docs/v1.8/configuration/agents)
+in `.env` setzen:
+
+```dotenv
+ENABLE_PORTWING=false
+ENABLE_DRYDOCK=true
+DD_AGENT_SECRET=ein-langes-zufaelliges-secret
+```
+
+Alternativ `DD_AGENT_SECRET_FILE=/run/secrets/portwing_token` setzen und das
+Secret in `secrets/portwing_token.txt` hinterlegen. Drydock und Portwing sind
+gegenseitig ausgeschlossen; Portainer und Hawser bleiben unabhängig schaltbar.
+Beide Alternativen verwenden `PORTWING_PORT` (Standard `3000`). Der native
+Agent startet mit `--agent`, überwacht den lokalen Docker-Socket und aktiviert
+die lokale Docker-Aktion für Updates.
+
+Im Drydock-Controller konfigurieren:
+
+```dotenv
+DD_AGENT_REMOTE1_HOST=adresse-des-agent-hosts
+DD_AGENT_REMOTE1_PORT=3000
+DD_AGENT_REMOTE1_SECRET=ein-langes-zufaelliges-secret
+# Nur für HTTP im vertrauenswürdigen LAN:
+DD_AGENT_ALLOW_INSECURE_SECRET=true
+```
+
+Für TLS am Agent `DD_SERVER_TLS_ENABLED=true`, `DD_SERVER_TLS_KEY` und
+`DD_SERVER_TLS_CERT` setzen und die Zertifikatdateien als Volumes einbinden.
+Am Controller entsprechend TLS konfigurieren. Weitere `DD_*`-Variablen können
+im Compose-Service ergänzt werden.
+
+Ein Image mit dieser Erweiterung bauen/pullen und den Container mit
+`docker compose up -d --force-recreate` neu erstellen. Das Image enthält nun
+auch die Node-Laufzeit und Anwendung aus `codeswhat/drydock:latest` und wird größer.
+Der Workflow prüft Änderungen dieses Images für amd64 und arm64 und hält
+seine Digests in den Image-Labels und `versions.yaml` fest.
+
 ## Große Image-Pulls: „Failed to up via Hawser: Connection error“
 
 Die Meldung kann durch einen Timeout entstehen; ohne Logs ist die Ursache
