@@ -1,8 +1,8 @@
 build:
-  date: "2026.11.03"
-  git_tag: "univeral-agent_2026.11.03"
+  date: "2026.11.04"
+  git_tag: "univeral-agent_2026.11.04"
   image: "ghcr.io/sandmaennchen5/docker-compose/universal-agent"
-  image_tag: "2026.11.03"
+  image_tag: "2026.11.04"
   platforms:
     - "linux/amd64"
     - "linux/arm64"
@@ -20,10 +20,10 @@ agents:
     version: "unknown"
     version_ref: ""
     version_matches_digest: false
-    index_digest: "sha256:cd22e4f904ff0e957a1421d1e9e9b8ca0523ed6b5f79f4d12b2ed0809ef3d734"
+    index_digest: "sha256:71e402b87bd9159aa018ef7b88a71cb4549da2fd1bf24bc918b34a0f4e97c005"
     platforms:
-      linux/amd64: "sha256:ad2e0324f6cbd72bdc8c845a3629db830bf902dd5baf8431a7ff4bce6fa26dee"
-      linux/arm64: "sha256:857d16ce0a733842bf351cc51cb4ac4d612a05116a72ee476da5fbf0c4f6e402"
+      linux/amd64: "sha256:1f7c95cb273d9a249b6668784de261739781845679f906c8b9f9c918b81b1b39"
+      linux/arm64: "sha256:b2e8d0e79d9dd2370cf1433087f104340121080219f7ee98d035a2a6d3dbd489"
 
   hawser:
     source_ref: "ghcr.io/finsys/hawser:latest"
@@ -37,10 +37,10 @@ agents:
 
   portwing:
     source_ref: "ghcr.io/codeswhat/portwing:latest"
-    version: "1.1.0"
-    version_ref: "ghcr.io/codeswhat/portwing:1.1.0"
+    version: "1.1.1"
+    version_ref: "ghcr.io/codeswhat/portwing:1.1.1"
     version_matches_digest: true
-    index_digest: "sha256:3715970a68c7fb63c5bd58eeb0d295d549dba6c0971a68ef90372df0d389014c"
+    index_digest: "sha256:c4f56847b40710be400565e57e7005079df18e65e2651c43d6a8449ca1e66cf1"
     platforms:
-      linux/amd64: "sha256:c74e2a06450959dab7bf09dce0275efd98ef5928a689cedbc33ff6fc82c1a22c"
-      linux/arm64: "sha256:df6b43cdfafeb2352164852cefd4c4d912d0c130fb97b795e333da794d14c6de"
+      linux/amd64: "sha256:e4f97972995f2229d8d97a1e0e08c42d3e9813b75fcf4a1e9b37fc66e85d5582"
+      linux/arm64: "sha256:14a9dfd29a57c9ee709b5ebb41e54b373033937055d2ad398e00915360ba2127"
