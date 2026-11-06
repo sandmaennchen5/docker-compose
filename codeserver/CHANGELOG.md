@@ -1,5 +1,46 @@
 # Code-Server Changelog
 
+## 4.145.0 — 2026.11.06
+
+**Upstream:** `linuxserver/docker-code-server:4.145.0-ls375`
+
+**UI Maker:** v0.28.4 (coolshrimp/WinForm-GUI-Maker)
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.145.0-ls375/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.144.0-ls374...4.145.0-ls375
+
+**Remote Changes:**
+
+Code v1.145.0
+
+### Security
+
+- Strip code-server's cookie from web socket requests going over the built-in
+  proxy. We were already doing this for regular proxied HTTP requests, but not
+  for proxied web sockets.
+- Add HttpOnly to cookies to prevent them from being accessed by JavaScript
+  proxied over the built-in proxy.
+
+### Changed
+
+- Update to Code 1.145.0
+
+### Added
+
+- Vietnamese locale.
+- New flag `--disable-file-cache` that keeps workspace files out of the browser
+  cache. It stops the webview service worker from storing them in Cache Storage
+  and serves them from `/vscode-remote-resource` with `Cache-Control: no-store`.
+  Extension files will still be cached.
+
+
 ## 4.144.0 — 2026.10.30
 
 **Upstream:** `linuxserver/docker-code-server:4.144.0-ls374`
