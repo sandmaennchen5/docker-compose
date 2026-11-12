@@ -1,8 +1,8 @@
 build:
-  date: "2026.11.08"
-  git_tag: "univeral-agent_2026.11.08"
+  date: "2026.11.12"
+  git_tag: "univeral-agent_2026.11.12"
   image: "ghcr.io/sandmaennchen5/docker-compose/universal-agent"
-  image_tag: "2026.11.08"
+  image_tag: "2026.11.12"
   platforms:
     - "linux/amd64"
     - "linux/arm64"
@@ -10,10 +10,10 @@ build:
 agents:
   drydock:
     source_ref: "codeswhat/drydock:latest"
-    index_digest: "sha256:c3646a3460a83c30f61e06945b1030c02e87f77526faa99d4b75f84d9364542d"
+    index_digest: "sha256:632cf3ca25c1606ac6248037672ad89ad6510640f259e8448fcc0aa460f69e15"
     platforms:
-      linux/amd64: "sha256:417fc027b6a6211e49fcd3d6e1ff4b0056a6105448a836bebdf18427e0e0e894"
-      linux/arm64: "sha256:af0d7121d02655546baca08a3ee7b86aacb7ff3cff34f4c142611575ace66cdf"
+      linux/amd64: "sha256:7e379747785839a06bee69a6537af58f221367be336fb3553cc9431f21ad14cb"
+      linux/arm64: "sha256:a3f41242b636daa0fccc3f9a6443a6f04d94f22a389d9c228575268ba3fed233"
 
   portainer:
     source_ref: "portainer/agent:sts"
