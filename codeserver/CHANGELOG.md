@@ -1,5 +1,53 @@
 # Code-Server Changelog
 
+## 4.146.0 — 2026.11.22
+
+**Upstream:** `linuxserver/docker-code-server:4.146.0-ls378`
+
+**UI Maker:** v0.28.4 (coolshrimp/WinForm-GUI-Maker)
+
+### Upstream Changelog
+
+**CI Report:**
+
+https://ci-tests.linuxserver.io/linuxserver/code-server/4.146.0-ls378/index.html
+
+**LinuxServer Changes:**
+
+**Full Changelog**: https://github.com/linuxserver/docker-code-server/compare/4.145.2-ls377...4.146.0-ls378
+
+**Remote Changes:**
+
+Code v1.146.0
+
+### Changed
+
+- Update to Code 1.146.0
+- For anyone building code-server, note that we switched to pnpm to match
+  upstream VS Code. npm is no longer supported for building from source.
+- The NPM package no longer ships with shrinkwraps, since shrinkwrap support is
+  removed in npm v12 and the pnpm switch makes generating the shrinkwraps
+  difficult. Although the shrinkwrap removal makes it easier for end users to
+  get updated dependencies, it also may not result in the same dependency tree
+  that was tested at release and can lead to unexpected behavior. To avoid this,
+  you can download the prebuilt source `package.tar.gz` from a GitHub release
+  and run `pnpm install` in the unpacked root directory to build and install the
+  dependencies, or build entirely from source.
+
+### Added
+
+- New flag `--wait` that waits for the opened files to be closed before
+  returning, so `code-server --wait` can be used as `EDITOR` or `GIT_EDITOR`.
+  Before, code-server's own script failed with `Unknown option --wait`, so this
+  only worked when the integrated terminal found the `remote-cli` script first.
+
+### Fixed
+
+- Requests against the built-in proxy will now be rewritten correctly against
+  the base URL on Windows. Previously it was trying to split the request on
+  backslashes instead of forward slashes.
+
+
 ## 4.145.2 — 2026.11.15
 
 **Upstream:** `linuxserver/docker-code-server:4.145.2-ls377`
